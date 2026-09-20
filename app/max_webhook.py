@@ -213,7 +213,7 @@ async def notify_ticket_resident(conn, ticket, text: str, timestamp: str, confir
 async def operator_queue(conn, user, user_id: int, timestamp: str):
     cursor = await conn.execute(
         "SELECT * FROM tickets WHERE house_id=? AND status!='confirmed' "
-        "ORDER BY CASE WHEN due_at IS NOT NULL AND due_at<? THEN 0 ELSE 1 END, "
+        "ORDER BY CASE WHEN due_at IS NOT NULL AND due_at<? AND first_response_at IS NULL THEN 0 ELSE 1 END, "
         "CASE priority WHEN 'emergency' THEN 0 WHEN 'urgent' THEN 1 ELSE 2 END, created_at LIMIT 5",
         (user['house_id'], timestamp),
     )
@@ -227,7 +227,7 @@ async def operator_queue(conn, user, user_id: int, timestamp: str):
         prefix = ticket['id'][:8]
         lines.append(
             f"• #{prefix} · {PRIORITY_LABELS[ticket['priority']]} · {STATUS_LABELS[ticket['status']]}"
-            f"{' · ПРОСРОЧЕНО' if is_overdue(ticket['due_at'], ticket['status']) else ''}\n"
+            f"{' · ПРОСРОЧЕНО' if is_overdue(ticket['due_at'], ticket['first_response_at']) else ''}\n"
             f"  {ticket['location']} — {ticket['description'][:70]}"
         )
         buttons.append([f'Заявка #{prefix}'])
@@ -392,8 +392,8 @@ async def operator_metrics(conn, user, user_id: int, timestamp: str):
         f'{location} — {count}' for location, count in metrics['top_locations']
     ) or 'нет активных'
     closed = (
-        f"{metrics['closed_on_time_percent']:g}% ({metrics['closed_with_sla_data']} заявок)"
-        if metrics['closed_on_time_percent'] is not None else 'ещё нет данных'
+        f"{metrics['first_response_on_time_percent']:g}% ({metrics['responded_with_sla_data']} заявок)"
+        if metrics['first_response_on_time_percent'] is not None else 'ещё нет данных'
     )
     text = (
         'Показатели дома\n\n'
@@ -401,7 +401,7 @@ async def operator_metrics(conn, user, user_id: int, timestamp: str):
         f"Аварийные: {metrics['emergency']}\n"
         f"Просроченные: {metrics['overdue']}\n"
         f"Средняя первая реакция: {format_minutes(metrics['average_first_response_minutes'])}\n"
-        f"Закрыто в срок: {closed}\n"
+        f"Ответ в пределах SLA: {closed}\n"
         f"Общие сигналы: {len(groups)}\n\n"
         f"Частые категории: {categories}\n"
         f"Проблемные места: {locations}"
@@ -418,7 +418,7 @@ def operator_ticket_card(ticket) -> tuple[str, list[dict[str, Any]]]:
         f"Статус: {STATUS_LABELS[ticket['status']]}",
         f"Приоритет: {PRIORITY_LABELS[ticket['priority']]}",
         f"Срок реакции: {ticket['due_at'] or 'не установлен'}"
-        f"{' · ПРОСРОЧЕНО' if is_overdue(ticket['due_at'], ticket['status']) else ''}",
+        f"{' · ПРОСРОЧЕНО' if is_overdue(ticket['due_at'], ticket['first_response_at']) else ''}",
         '', ticket['description'],
     ]
     buttons: list[list[str]] = []
@@ -620,6 +620,10 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
             'UPDATE tickets SET status=?,updated_at=?,version=version+1 WHERE id=?',
             (status, timestamp, ticket['id']),
         )
+        if status == 'confirmed':
+            await conn.execute('UPDATE tickets SET closed_at=? WHERE id=?', (timestamp, ticket['id']))
+        else:
+            await conn.execute('UPDATE tickets SET closed_at=NULL WHERE id=?', (ticket['id'],))
         await conn.execute(
             'INSERT INTO events(ticket_id,actor_id,kind,status,text,created_at) VALUES(?,?,?,?,?,?)',
             (ticket['id'], user['id'], 'status_changed', status, comment, timestamp),

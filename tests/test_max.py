@@ -301,9 +301,9 @@ def test_operator_sees_aggregated_house_metrics(max_app):
         ).fetchone()[0]
     assert 'Активные: 2' in text
     assert 'Аварийные: 1' in text
-    assert 'Просроченные: 2' in text
+    assert 'Просроченные: 1' in text
     assert 'Средняя первая реакция: 25 мин.' in text
-    assert 'Закрыто в срок: 100% (1 заявок)' in text
+    assert 'Ответ в пределах SLA: 50% (2 заявок)' in text
 
 
 def test_webhook_rejects_bad_input_and_missing_config(tmp_path, monkeypatch):
