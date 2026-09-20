@@ -1,5 +1,8 @@
 import asyncio
+import hashlib
+import hmac
 import json
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
@@ -571,3 +574,101 @@ def test_reopened_via_max_clears_closed_at(max_app):
         ticket = dict(conn.execute("SELECT * FROM tickets WHERE id='reopen-12345678'").fetchone())
     assert ticket['status'] == 'reopened'
     assert ticket['closed_at'] is None
+
+
+def test_manual_address_requires_matching_house_code(max_app):
+    client, db = max_app
+    headers = {'X-Max-Bot-Api-Secret': 'test-webhook-secret'}
+    with db.connect(write=True) as conn:
+        conn.execute('INSERT INTO houses VALUES(?,?)', ('manual-house', 'Москва, улица Лесная, дом 10'))
+        conn.execute(
+            'INSERT INTO enrollment_codes(code_hash,house_id,role,expires_at,max_uses,created_at) '
+            'VALUES(?,?,?,?,?,?)',
+            (token_hash('MANUAL-OK-CODE-1'), 'manual-house', 'resident',
+             '2099-01-01T00:00:00+00:00', 1, '2026-01-01T00:00:00+00:00'),
+        )
+    for mid, text in [
+        ('manual-start', '/start'),
+        ('manual-select', 'Ввести адрес вручную'),
+        ('manual-wrong-address', 'Москва, улица Другая, дом 99'),
+        ('manual-wrong-code', '/код MANUAL-OK-CODE-1'),
+    ]:
+        response = client.post('/webhooks/max', headers=headers, json=update(mid, text, 1401))
+        assert response.status_code == 200
+    with db.connect() as conn:
+        assert conn.execute('SELECT 1 FROM max_links WHERE max_user_id=1401').fetchone() is None
+        assert conn.execute('SELECT used_count FROM enrollment_codes').fetchone()[0] == 0
+
+    for mid, text in [
+        ('manual-select-correct', 'Ввести адрес вручную'),
+        ('manual-address', 'Москва, улица Лесная, дом 10'),
+        ('manual-code', '/код MANUAL-OK-CODE-1'),
+    ]:
+        response = client.post('/webhooks/max', headers=headers, json=update(mid, text, 1401))
+        assert response.status_code == 200
+    with db.connect() as conn:
+        linked = conn.execute(
+            'SELECT u.house_id FROM max_links l JOIN users u ON u.id=l.user_id WHERE l.max_user_id=1401'
+        ).fetchone()
+    assert linked['house_id'] == 'manual-house'
+
+
+def test_gosuslugi_bridge_links_active_temporary_registration(tmp_path, monkeypatch):
+    secret = 'bridge-secret-with-at-least-32-characters'
+    monkeypatch.setenv('MAX_WEBHOOK_SECRET', 'test-webhook-secret')
+    monkeypatch.setenv('GOSUSLUGI_BRIDGE_URL', 'https://identity.example.test/connect')
+    monkeypatch.setenv('GOSUSLUGI_BRIDGE_SECRET', secret)
+    path = str(tmp_path / 'gosuslugi.db')
+    db = Database(path)
+    db.initialize()
+    with db.connect(write=True) as conn:
+        conn.executemany('INSERT INTO houses VALUES(?,?)', [
+            ('permanent-house', 'Москва, улица Постоянная, дом 1'),
+            ('temporary-house', 'Москва, улица Временная, дом 2'),
+        ])
+    headers = {'X-Max-Bot-Api-Secret': 'test-webhook-secret'}
+    with TestClient(create_app(path)) as client:
+        client.post('/webhooks/max', headers=headers, json=update('gos-start', '/start', 1501))
+        client.post('/webhooks/max', headers=headers,
+                    json=update('gos-select', 'Подтянуть адрес из Госуслуг', 1501))
+        with db.connect() as conn:
+            message = conn.execute(
+                'SELECT text FROM max_outbox WHERE max_user_id=1501 ORDER BY id DESC LIMIT 1'
+            ).fetchone()[0]
+        state = parse_qs(urlparse(message.splitlines()[-1]).query)['state'][0]
+        claim = {
+            'state': state,
+            'subject_id': 'esia-subject-1501',
+            'registrations': [
+                {'type': 'permanent', 'house_address': 'Москва, улица Постоянная, дом 1'},
+                {'type': 'temporary', 'house_address': 'Москва, улица Временная, дом 2',
+                 'valid_until': '2099-12-31'},
+            ],
+        }
+        raw = json.dumps(claim, ensure_ascii=False, separators=(',', ':')).encode()
+        signature = hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+        invalid = client.post(
+            '/api/integrations/gosuslugi/residency', content=raw,
+            headers={'Content-Type': 'application/json', 'X-DomPulse-Signature': 'bad'},
+        )
+        response = client.post(
+            '/api/integrations/gosuslugi/residency', content=raw,
+            headers={'Content-Type': 'application/json', 'X-DomPulse-Signature': 'sha256=' + signature},
+        )
+        replay = client.post(
+            '/api/integrations/gosuslugi/residency', content=raw,
+            headers={'Content-Type': 'application/json', 'X-DomPulse-Signature': signature},
+        )
+    assert invalid.status_code == 401
+    assert response.status_code == 200
+    assert response.json() == {'status': 'completed', 'linked': True, 'house_id': 'temporary-house'}
+    assert replay.status_code == 409
+    with db.connect() as conn:
+        linked = conn.execute(
+            'SELECT u.house_id FROM max_links l JOIN users u ON u.id=l.user_id WHERE l.max_user_id=1501'
+        ).fetchone()
+        verification = dict(conn.execute('SELECT * FROM residency_verifications').fetchone())
+    assert linked['house_id'] == 'temporary-house'
+    assert verification['registration_type'] == 'temporary'
+    assert verification['subject_hash'] != claim['subject_id']
+    assert verification['house_address'] == 'Москва, улица Временная, дом 2'

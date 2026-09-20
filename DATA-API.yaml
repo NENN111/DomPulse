@@ -77,9 +77,26 @@ checks:
     body: null
     expected_status: 200
     required_response_fields: [active, emergency, overdue, average_first_response_minutes, responded_with_sla_data, first_response_on_time_percent, top_categories, top_locations]
+  - name: Подтверждённый адрес регистрации
+    method: POST
+    path: /api/integrations/gosuslugi/residency
+    role: trusted_gosuslugi_bridge
+    parameters: [X-DomPulse-Signature]
+    body:
+      state: одноразовое_состояние_из_ссылки
+      subject_id: идентификатор_субъекта_у_провайдера
+      registrations:
+        - type: temporary
+          house_address: Москва, улица Временная, дом 2
+          fias_house_id: необязательный_идентификатор_дома
+          valid_until: 2099-12-31
+    expected_status: 200
+    required_response_fields: [status, linked, house_id]
 negative_checks:
   - чужая заявка для жителя возвращает 404
   - заявка другого дома для оператора возвращает 404
   - недопустимый переход статуса возвращает 409
   - устаревшая expected_version возвращает 409
   - отсутствующий или неверный Bearer-токен возвращает 401
+  - неверная подпись Госуслуги-bridge возвращает 401
+  - повторное использование state возвращает 409

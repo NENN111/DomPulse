@@ -12,6 +12,7 @@ from fastapi import HTTPException, Request
 from .db import AsyncDatabase, token_hash
 from .analytics import house_metrics
 from .sla import calculate_due_at, is_overdue
+from .residency import begin_verified_link, display_name, normalize_house_address
 
 MAX_WEBHOOK_BYTES = 256 * 1024
 
@@ -172,7 +173,7 @@ async def record_failed_link_attempt(conn, user_id: int, timestamp: str) -> bool
     return blocked_until is not None
 
 
-async def enroll_with_code(conn, user_id: int, payload: dict[str, Any], code: str, timestamp: str):
+async def enroll_with_code(conn, user_id: int, payload: dict[str, Any], code: str, timestamp: str, expected_address: str | None = None):
     cursor = await conn.execute('SELECT * FROM max_link_attempts WHERE max_user_id=?', (user_id,))
     attempt = await cursor.fetchone()
     if attempt and attempt['blocked_until'] and attempt['blocked_until'] > timestamp:
@@ -190,6 +191,15 @@ async def enroll_with_code(conn, user_id: int, payload: dict[str, Any], code: st
         blocked = await record_failed_link_attempt(conn, user_id, timestamp)
         return None, 'Слишком много попыток. Повторите через 15 минут.' if blocked else 'Код не принят. Проверьте его и повторите попытку.'
 
+    if expected_address:
+        cursor = await conn.execute('SELECT address FROM houses WHERE id=?', (enrollment['house_id'],))
+        house = await cursor.fetchone()
+        if house is None or normalize_house_address(house['address']) != normalize_house_address(expected_address):
+            blocked = await record_failed_link_attempt(conn, user_id, timestamp)
+            message = 'Адрес не совпадает с домом в коде. Проверьте адрес или запросите код у своей УК.'
+            if blocked:
+                message = 'Слишком много попыток. Повторите через 15 минут.'
+            return None, message
     source_user = payload.get('user') or ((payload.get('message') or {}).get('sender') or {})
     display_name = source_user.get('name') if isinstance(source_user, dict) else None
     internal_id = f'max-{enrollment["role"]}-{user_id}'
@@ -538,20 +548,71 @@ async def save_dialog(conn, user_id: int, state: str, draft: dict[str, Any], tim
     )
 
 
+def unlinked_menu() -> tuple[str, list[dict[str, Any]]]:
+    return (
+        'Профиль пока не привязан к дому. Выберите способ подтверждения адреса или введите /код <одноразовый-код>.',
+        keyboard([['Подтянуть адрес из Госуслуг'], ['Ввести адрес вручную'], ['У меня есть код']]),
+    )
+
+
 async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp: str):
     text = message_text(payload)
     user = await linked_user(conn, user_id)
 
-    if user is None and text.lower().startswith('/код '):
-        user, error = await enroll_with_code(conn, user_id, payload, text[5:], timestamp)
-        if error:
-            return error, []
-        await save_dialog(conn, user_id, 'idle', {}, timestamp)
-        reply, attachments = menu(user['role'])
-        return 'Профиль успешно привязан к дому.\n\n' + reply, attachments
+    cursor = await conn.execute('SELECT * FROM max_dialogs WHERE max_user_id=?', (user_id,))
+    dialog = await cursor.fetchone()
+    state = dialog['state'] if dialog else 'idle'
+    draft = json.loads(dialog['draft_json']) if dialog else {}
+
     if user is None:
-        suffix = ' Для привязки введите /код <одноразовый-код>.'
-        return ('Профиль не привязан к дому. Обратитесь к организатору демонстрации.' + suffix, [])
+        if payload['update_type'] == 'bot_started' or text.lower() == '/start':
+            await save_dialog(conn, user_id, 'idle', {}, timestamp)
+            return unlinked_menu()
+        if text == 'Отмена':
+            await save_dialog(conn, user_id, 'idle', {}, timestamp)
+            return unlinked_menu()
+        if text.lower().startswith('/код '):
+            expected_address = draft.get('address') if state == 'manual_code' else None
+            user, error = await enroll_with_code(
+                conn, user_id, payload, text[5:], timestamp, expected_address,
+            )
+            if error:
+                return error, keyboard([['Ввести адрес вручную'], ['У меня есть код']])
+            await save_dialog(conn, user_id, 'idle', {}, timestamp)
+            reply, attachments = menu(user['role'])
+            return 'Профиль успешно привязан к дому.\n\n' + reply, attachments
+        if text == 'Подтянуть адрес из Госуслуг':
+            url = await begin_verified_link(conn, user_id, display_name(payload, user_id), timestamp)
+            if url:
+                return (
+                    'Откройте защищённую ссылку и разрешите передачу адреса регистрации. '
+                    'Ссылка действует 15 минут:\n' + url,
+                    keyboard([['Ввести адрес вручную'], ['У меня есть код']]),
+                )
+            await save_dialog(conn, user_id, 'manual_address', {}, timestamp)
+            return (
+                'Подключение к Госуслугам пока не настроено. Введите адрес дома вручную '
+                '(до номера дома, без квартиры).', keyboard([['Отмена']]),
+            )
+        if text == 'Ввести адрес вручную':
+            await save_dialog(conn, user_id, 'manual_address', {}, timestamp)
+            return 'Введите адрес дома (до номера дома, без квартиры).', keyboard([['Отмена']])
+        if state == 'manual_address':
+            if text == 'Отмена':
+                await save_dialog(conn, user_id, 'idle', {}, timestamp)
+                return unlinked_menu()
+            if not 5 <= len(text) <= 300:
+                return 'Адрес должен содержать от 5 до 300 символов.', keyboard([['Отмена']])
+            await save_dialog(conn, user_id, 'manual_code', {'address': text}, timestamp)
+            return (
+                'Адрес сохранён. Теперь введите одноразовый код вашей УК в формате '
+                '/код XXXX-XXXX-XXXX-XXXX. Код подтвердит, что выбран правильный дом.',
+                keyboard([['Отмена']]),
+            )
+        if text == 'У меня есть код':
+            await save_dialog(conn, user_id, 'idle', {}, timestamp)
+            return 'Введите код в формате /код XXXX-XXXX-XXXX-XXXX.', keyboard([['Ввести адрес вручную']])
+        return unlinked_menu()
 
     cursor = await conn.execute('SELECT * FROM max_dialogs WHERE max_user_id=?', (user_id,))
     dialog = await cursor.fetchone()

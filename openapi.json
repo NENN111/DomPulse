@@ -6,6 +6,60 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/integrations/gosuslugi/residency": {
+      "post": {
+        "summary": "Gosuslugi Residency",
+        "operationId": "gosuslugi_residency_api_integrations_gosuslugi_residency_post",
+        "parameters": [
+          {
+            "name": "x-dompulse-signature",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dompulse-Signature"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GosuslugiResidencyClaim"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "summary": "Health",
@@ -426,6 +480,39 @@
         ],
         "title": "Event"
       },
+      "GosuslugiResidencyClaim": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 20,
+            "title": "State"
+          },
+          "subject_id": {
+            "type": "string",
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Subject Id"
+          },
+          "registrations": {
+            "items": {
+              "$ref": "#/components/schemas/VerifiedRegistration"
+            },
+            "type": "array",
+            "maxItems": 5,
+            "minItems": 1,
+            "title": "Registrations"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "state",
+          "subject_id",
+          "registrations"
+        ],
+        "title": "GosuslugiResidencyClaim"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -839,6 +926,56 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "VerifiedRegistration": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "permanent",
+              "temporary"
+            ],
+            "title": "Type"
+          },
+          "house_address": {
+            "type": "string",
+            "maxLength": 300,
+            "minLength": 5,
+            "title": "House Address"
+          },
+          "fias_house_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fias House Id"
+          },
+          "valid_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid Until"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "type",
+          "house_address"
+        ],
+        "title": "VerifiedRegistration"
       }
     },
     "securitySchemes": {

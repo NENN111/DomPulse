@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import json
 import os
 from contextlib import asynccontextmanager
@@ -8,10 +10,11 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .db import AsyncDatabase, token_hash
-from .models import CommentCreate, Profile, StatusChange, Ticket, TicketCreate, TicketDetail
+from .models import CommentCreate, GosuslugiResidencyClaim, Profile, StatusChange, Ticket, TicketCreate, TicketDetail
 from .analytics import house_metrics
 from .max_webhook import keyboard, parse_update, queue_message, save_dialog, store_update, verify_secret
 from .sla import calculate_due_at
+from .residency import complete_verified_link
 
 # 'resolved' records the operator's report, 'confirmed' records the resident's response.
 OPERATOR_TRANSITIONS = {
@@ -35,6 +38,14 @@ def create_app(db_path: str | None = None):
     if not webhook_secret:
         raise RuntimeError('MAX_WEBHOOK_SECRET is required. Set it explicitly before starting the API.')
     db = AsyncDatabase(configured_db_path)
+    bridge_url = os.getenv('GOSUSLUGI_BRIDGE_URL')
+    bridge_secret = os.getenv('GOSUSLUGI_BRIDGE_SECRET')
+    if bool(bridge_url) != bool(bridge_secret):
+        raise RuntimeError('GOSUSLUGI_BRIDGE_URL and GOSUSLUGI_BRIDGE_SECRET must be set together.')
+    if bridge_url and not bridge_url.startswith('https://'):
+        raise RuntimeError('GOSUSLUGI_BRIDGE_URL must use HTTPS.')
+    if bridge_secret and len(bridge_secret) < 32:
+        raise RuntimeError('GOSUSLUGI_BRIDGE_SECRET must contain at least 32 characters.')
 
     @asynccontextmanager
     async def lifespan(app):
@@ -106,6 +117,27 @@ def create_app(db_path: str | None = None):
             attachments = keyboard([['Да, всё решено'], ['Проблема осталась']])
             await save_dialog(conn, link['max_user_id'], 'confirm', {'ticket_id': ticket['id']}, timestamp)
         await queue_message(conn, link['max_user_id'], text, attachments, timestamp)
+
+    @app.post('/api/integrations/gosuslugi/residency')
+    async def gosuslugi_residency(
+        request: Request,
+        claim: GosuslugiResidencyClaim,
+        x_dompulse_signature: str | None = Header(default=None),
+    ):
+        if not bridge_secret:
+            raise HTTPException(503, 'Интеграция с Госуслугами не настроена')
+        raw = await request.body()
+        supplied = (x_dompulse_signature or '').removeprefix('sha256=')
+        expected = hmac.new(bridge_secret.encode(), raw, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(supplied, expected):
+            raise HTTPException(401, 'Недействительная подпись интеграции')
+        async with db.connect(write=True) as conn:
+            status, house = await complete_verified_link(conn, claim.model_dump(), now())
+        if status == 'expired':
+            raise HTTPException(410, 'Ссылка подтверждения истекла')
+        if status in {'invalid', 'already_linked', 'subject_linked'}:
+            raise HTTPException(409, 'Подтверждение уже использовано или недействительно')
+        return {'status': status, 'linked': status == 'completed', 'house_id': house['id'] if house else None}
 
     @app.get('/health')
     async def health():
