@@ -1,0 +1,85 @@
+version: 1
+name: ДомПульс REST API
+base_url: http://127.0.0.1:8080
+authentication:
+  type: bearer
+  note: Локальные тестовые токены создаются app.seed и не публикуются.
+checks:
+  - name: Проверка здоровья
+    method: GET
+    path: /health
+    role: anonymous
+    parameters: []
+    body: null
+    expected_status: 200
+    required_response_fields: [status, max_configured]
+  - name: Текущий профиль
+    method: GET
+    path: /api/me
+    role: resident_or_operator
+    parameters: []
+    body: null
+    expected_status: 200
+    required_response_fields: [id, name, role, house_id, address]
+  - name: Создание заявки
+    method: POST
+    path: /api/tickets
+    role: resident
+    parameters: []
+    body:
+      category: heating
+      location: Подъезд 1, квартира 12
+      description: Со вчерашнего вечера холодные батареи.
+    expected_status: 201
+    required_response_fields: [id, house_id, resident_id, status, priority, version, events, attachments]
+  - name: Получение заявки
+    method: GET
+    path: /api/tickets/{ticket_id}
+    role: owner_resident_or_house_operator
+    parameters: [ticket_id]
+    body: null
+    expected_status: 200
+    required_response_fields: [id, category, location, description, status, version, events, attachments]
+  - name: Список заявок
+    method: GET
+    path: /api/tickets
+    role: resident_or_operator
+    parameters: [limit, offset]
+    body: null
+    expected_status: 200
+    required_response_fields: []
+    response_type: array
+  - name: Комментарий
+    method: POST
+    path: /api/tickets/{ticket_id}/comments
+    role: owner_resident_or_house_operator
+    parameters: [ticket_id]
+    body:
+      text: Специалист получил сообщение и уточняет причину.
+    expected_status: 201
+    required_response_fields: [id, status, version, events]
+  - name: Изменение статуса
+    method: POST
+    path: /api/tickets/{ticket_id}/status
+    role: depends_on_transition
+    parameters: [ticket_id]
+    body:
+      status: accepted
+      comment: Заявка принята диспетчером.
+      expected_version: 1
+    expected_status: 200
+    required_response_fields: [id, status, version, first_response_at]
+  - name: Показатели дома
+    method: GET
+    path: /api/metrics/house
+    role: operator
+    parameters: []
+    body: null
+    expected_status: 200
+    required_response_fields: [active, emergency, overdue, average_first_response_minutes, responded_with_sla_data, first_response_on_time_percent, top_categories, top_locations]
+negative_checks:
+  - чужая заявка для жителя возвращает 404
+  - заявка другого дома для оператора возвращает 404
+  - недопустимый переход статуса возвращает 409
+  - устаревшая expected_version возвращает 409
+  - отсутствующий или неверный Bearer-токен возвращает 401

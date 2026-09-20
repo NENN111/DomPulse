@@ -35,6 +35,16 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS tickets_house ON tickets(house_id, created_at);
 CREATE INDEX IF NOT EXISTS tickets_resident ON tickets(resident_id, created_at);
 CREATE INDEX IF NOT EXISTS events_ticket ON events(ticket_id, id);
+CREATE TABLE IF NOT EXISTS ticket_attachments (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ ticket_id TEXT NOT NULL REFERENCES tickets(id),
+ source TEXT NOT NULL,
+ type TEXT NOT NULL,
+ external_id TEXT,
+ metadata_json TEXT NOT NULL DEFAULT '{}',
+ created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ticket_attachments_ticket ON ticket_attachments(ticket_id, id);
 CREATE TABLE IF NOT EXISTS max_updates (
  fingerprint TEXT PRIMARY KEY,
  update_type TEXT NOT NULL,

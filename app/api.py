@@ -1,3 +1,4 @@
+import json
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -76,7 +77,17 @@ def create_app(db_path: str | None = None):
             (ticket['id'],),
         )
         events = await cursor.fetchall()
-        return {**ticket, 'events': [dict(e) for e in events]}
+        cursor = await conn.execute(
+            'SELECT id,source,type,external_id,metadata_json,created_at '
+            'FROM ticket_attachments WHERE ticket_id=? ORDER BY id',
+            (ticket['id'],),
+        )
+        attachments = []
+        for row in await cursor.fetchall():
+            item = dict(row)
+            item['metadata'] = json.loads(item.pop('metadata_json'))
+            attachments.append(item)
+        return {**ticket, 'events': [dict(e) for e in events], 'attachments': attachments}
 
     async def event(conn, ticket_id, user, kind, status, text, timestamp):
         await conn.execute(

@@ -20,6 +20,13 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def format_datetime(value: str | None) -> str:
+    if not value:
+        return 'не указана'
+    parsed = datetime.fromisoformat(value)
+    return parsed.astimezone(timezone.utc).strftime('%d.%m.%Y %H:%M UTC')
+
+
 def verify_secret(expected: str | None, supplied: str | None):
     if not expected:
         raise HTTPException(503, 'MAX webhook is not configured')
@@ -348,8 +355,9 @@ async def announce_incident(conn, user, ticket_ids: list[str], priority: str, ti
     for ticket in tickets:
         await conn.execute('INSERT INTO incident_tickets(incident_id,ticket_id) VALUES(?,?)', (incident_id, ticket['id']))
         await conn.execute(
-            'UPDATE tickets SET priority=?,due_at=?,updated_at=?,version=version+1 WHERE id=?',
-            (priority, calculate_due_at(priority, ticket['created_at']), timestamp, ticket['id']),
+            'UPDATE tickets SET priority=?,due_at=?,first_response_at=COALESCE(first_response_at,?),'
+            'updated_at=?,version=version+1 WHERE id=?',
+            (priority, calculate_due_at(priority, ticket['created_at']), timestamp, timestamp, ticket['id']),
         )
         note = (
             'УК подтвердила общий инцидент по нескольким обращениям. '
@@ -413,11 +421,11 @@ async def operator_metrics(conn, user, user_id: int, timestamp: str):
 def operator_ticket_card(ticket) -> tuple[str, list[dict[str, Any]]]:
     lines = [
         f"Заявка #{ticket['id'][:8]}",
-        f"Категория: {ticket['category']}",
+        f"Категория: {CATEGORY_LABELS[ticket['category']]}",
         f"Место: {ticket['location']}",
         f"Статус: {STATUS_LABELS[ticket['status']]}",
         f"Приоритет: {PRIORITY_LABELS[ticket['priority']]}",
-        f"Срок реакции: {ticket['due_at'] or 'не установлен'}"
+        f"Срок реакции: {format_datetime(ticket['due_at'])}"
         f"{' · ПРОСРОЧЕНО' if is_overdue(ticket['due_at'], ticket['first_response_at']) else ''}",
         '', ticket['description'],
     ]
@@ -425,7 +433,7 @@ def operator_ticket_card(ticket) -> tuple[str, list[dict[str, Any]]]:
     action = OPERATOR_ACTIONS.get(ticket['status'])
     if action:
         buttons.append([action[0]])
-    buttons.extend([['Изменить срочность'], ['Очередь дома']])
+    buttons.extend([['Ответить жителю'], ['Изменить срочность'], ['Очередь дома']])
     return '\n'.join(lines), keyboard(buttons)
 
 
@@ -446,17 +454,80 @@ async def resident_ticket_card(conn, ticket, user):
         f"Место: {ticket['location']}",
         f"Статус: {STATUS_LABELS[ticket['status']]}",
         f"Срочность: {PRIORITY_LABELS[ticket['priority']]}",
-        '', f"Описание: {ticket['description']}",
+        f"Создано: {format_datetime(ticket['created_at'])}", '', f"Описание: {ticket['description']}",
     ]
     if incident:
         lines.extend(['', 'УК подтвердила общий инцидент по нескольким обращениям дома.'])
     lines.extend(['', 'История:'])
     for event in events:
         author = 'Вы' if event['role'] == 'resident' and event['name'] == user['name'] else 'УК'
-        timestamp_label = event['created_at'][:16].replace('T', ' ')
+        timestamp_label = format_datetime(event['created_at'])
         lines.append(f"• {timestamp_label} · {author}: {event['text']}")
     return '\n'.join(lines), keyboard([['Мои обращения'], ['Сообщить о проблеме'], ['Меню']])
 
+
+def ticket_review(draft: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+    text = (
+        'Проверьте обращение\n\n'
+        f"Категория: {CATEGORY_LABELS[draft['category']]}\n"
+        f"Место: {draft['location']}\n"
+        f"Описание: {draft['description']}\n"
+        'Фото: не добавлено'
+    )
+    return text, keyboard([['Отправить'], ['Изменить'], ['Отмена']])
+
+
+async def matching_incident(conn, user, draft: dict[str, Any]):
+    cursor = await conn.execute(
+        'SELECT i.*,t.description FROM incidents i '
+        'JOIN incident_tickets it ON it.incident_id=i.id '
+        'JOIN tickets t ON t.id=it.ticket_id '
+        "WHERE i.house_id=? AND i.category=? AND t.status!='confirmed' "
+        'ORDER BY i.created_at DESC',
+        (user['house_id'], draft['category']),
+    )
+    seen = set()
+    for row in await cursor.fetchall():
+        if row['id'] in seen:
+            continue
+        seen.add(row['id'])
+        candidate = {'category': row['category'], 'location': row['location'], 'description': row['description']}
+        if similarity(draft, candidate) >= 0.7:
+            return dict(row)
+    return None
+
+
+async def create_resident_ticket(conn, user, draft: dict[str, Any], timestamp: str):
+    ticket_id = str(uuid4())
+    await conn.execute(
+        'INSERT INTO tickets(id,house_id,resident_id,category,location,description,status,created_at,updated_at) '
+        "VALUES(?,?,?,?,?,?,'new',?,?)",
+        (ticket_id, user['house_id'], user['id'], draft['category'], draft['location'],
+         draft['description'], timestamp, timestamp),
+    )
+    await conn.execute(
+        'INSERT INTO events(ticket_id,actor_id,kind,status,text,created_at) VALUES(?,?,?,?,?,?)',
+        (ticket_id, user['id'], 'created', 'new', draft['description'], timestamp),
+    )
+    await conn.execute(
+        'UPDATE tickets SET due_at=? WHERE id=?',
+        (calculate_due_at('normal', timestamp), ticket_id),
+    )
+    incident_id = draft.get('incident_id')
+    if incident_id:
+        cursor = await conn.execute(
+            'SELECT 1 FROM incidents i WHERE i.id=? AND i.house_id=? AND EXISTS ('
+            'SELECT 1 FROM incident_tickets it JOIN tickets t ON t.id=it.ticket_id '
+            "WHERE it.incident_id=i.id AND t.status!='confirmed'"
+            ')',
+            (incident_id, user['house_id']),
+        )
+        if await cursor.fetchone():
+            await conn.execute(
+                'INSERT INTO incident_tickets(incident_id,ticket_id) VALUES(?,?)',
+                (incident_id, ticket_id),
+            )
+    return ticket_id
 
 async def save_dialog(conn, user_id: int, state: str, draft: dict[str, Any], timestamp: str):
     await conn.execute(
@@ -497,10 +568,38 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
     if user['role'] == 'operator':
         if text == 'Показатели дома':
             return await operator_metrics(conn, user, user_id, timestamp)
-        if text == 'Общие проблемы дома':
+        if text in {'Общие проблемы дома', 'Обновить сигналы'}:
             return await operator_insights(conn, user, user_id, timestamp)
         if text in {'Очередь дома', 'Обновить очередь'}:
             return await operator_queue(conn, user, user_id, timestamp)
+        if state == 'operator_insights' and text.startswith('Открыть сигнал '):
+            try:
+                index = int(text.removeprefix('Открыть сигнал ').strip()) - 1
+                ticket_ids = draft['groups'][index]
+            except (ValueError, IndexError, KeyError, TypeError):
+                return 'Сигнал не найден. Обновите список.', keyboard([['Общие проблемы дома']])
+            signal = await incident_signal_card(conn, user, ticket_ids)
+            if signal is None:
+                return 'Сигнал устарел. Обновите список.', keyboard([['Общие проблемы дома']])
+            _, card = signal
+            await save_dialog(conn, user_id, 'incident_confirm', {'ticket_ids': ticket_ids}, timestamp)
+            return card, keyboard([['Обычная срочность'], ['Срочно'], ['Авария'], ['Отмена']])
+        if state == 'incident_confirm':
+            priorities = {'Обычная срочность': 'normal', 'Срочно': 'urgent', 'Авария': 'emergency'}
+            priority = priorities.get(text)
+            if priority is None:
+                return 'Выберите срочность общего инцидента.', keyboard([
+                    ['Обычная срочность'], ['Срочно'], ['Авария'], ['Отмена'],
+                ])
+            announced = await announce_incident(conn, user, draft.get('ticket_ids', []), priority, timestamp)
+            await save_dialog(conn, user_id, 'idle', {}, timestamp)
+            if announced is None:
+                return 'Сигнал устарел и не был подтверждён.', keyboard([['Общие проблемы дома']])
+            incident_id, count = announced
+            return (
+                f'Общий инцидент #{incident_id[:8]} подтверждён. Связано обращений: {count}.',
+                keyboard([['Общие проблемы дома'], ['Очередь дома']]),
+            )
         if text.startswith('Заявка #'):
             prefix = text.removeprefix('Заявка #').strip()
             if len(prefix) != 8 or not prefix.isalnum():
@@ -518,6 +617,9 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
             }, timestamp)
             return operator_ticket_card(ticket)
         if state == 'operator_ticket':
+            if text == 'Ответить жителю':
+                await save_dialog(conn, user_id, 'operator_reply', draft, timestamp)
+                return 'Напишите ответ жителю.', keyboard([['Отмена']])
             action = OPERATOR_ACTIONS.get(draft.get('status'))
             if text == 'Изменить срочность':
                 await save_dialog(conn, user_id, 'operator_priority', draft, timestamp)
@@ -529,6 +631,35 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
                     **draft, 'target_status': action[1], 'action_label': action[0],
                 }, timestamp)
                 return f"{action[0]}. Напишите короткий комментарий для жителя.", keyboard([['Отмена']])
+        if state == 'operator_reply':
+            if not 3 <= len(text) <= 4000:
+                return 'Комментарий должен содержать от 3 до 4000 символов.', keyboard([['Отмена']])
+            cursor = await conn.execute(
+                'SELECT * FROM tickets WHERE id=? AND house_id=?',
+                (draft.get('ticket_id'), user['house_id']),
+            )
+            ticket = await cursor.fetchone()
+            if ticket is None:
+                return 'Заявка не найдена.', keyboard([['Очередь дома']])
+            await conn.execute(
+                'INSERT INTO events(ticket_id,actor_id,kind,status,text,created_at) VALUES(?,?,?,?,?,?)',
+                (ticket['id'], user['id'], 'comment', ticket['status'], text, timestamp),
+            )
+            await conn.execute(
+                'UPDATE tickets SET first_response_at=COALESCE(first_response_at,?),'
+                'updated_at=?,version=version+1 WHERE id=?',
+                (timestamp, timestamp, ticket['id']),
+            )
+            await notify_ticket_resident(
+                conn, ticket, f"Ответ УК по обращению №{ticket['id'][:8]}: {text}", timestamp,
+            )
+            cursor = await conn.execute('SELECT * FROM tickets WHERE id=?', (ticket['id'],))
+            updated = await cursor.fetchone()
+            await save_dialog(
+                conn, user_id, 'operator_ticket',
+                {'ticket_id': ticket['id'], 'status': updated['status']}, timestamp,
+            )
+            return operator_ticket_card(updated)
         if state == 'operator_priority':
             priorities = {'Обычная срочность': 'normal', 'Срочно': 'urgent', 'Авария': 'emergency'}
             priority = priorities.get(text)
@@ -541,8 +672,11 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
             ticket = await cursor.fetchone()
             if ticket is None:
                 return 'Заявка не найдена.', keyboard([['Очередь дома']])
-            await conn.execute('UPDATE tickets SET priority=?,due_at=?,updated_at=?,version=version+1 WHERE id=?',
-                               (priority, calculate_due_at(priority, ticket['created_at']), timestamp, ticket['id']))
+            await conn.execute(
+                'UPDATE tickets SET priority=?,due_at=?,first_response_at=COALESCE(first_response_at,?),'
+                'updated_at=?,version=version+1 WHERE id=?',
+                (priority, calculate_due_at(priority, ticket['created_at']), timestamp, timestamp, ticket['id']),
+            )
             await conn.execute(
                 'INSERT INTO events(ticket_id,actor_id,kind,status,text,created_at) VALUES(?,?,?,?,?,?)',
                 (ticket['id'], user['id'], 'priority_changed', ticket['status'],
@@ -585,6 +719,18 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
             await save_dialog(conn, user_id, 'idle', {}, timestamp)
             return f"Заявка #{ticket['id'][:8]}: статус «{label}» сохранён.", keyboard([['Очередь дома']])
         return 'Выберите действие из меню диспетчера.', keyboard([['Очередь дома']])
+    if text.startswith('Обращение #'):
+        prefix = text.removeprefix('Обращение #').strip()
+        if len(prefix) != 8 or not prefix.isalnum():
+            return 'Не удалось открыть обращение.', keyboard([['Мои обращения']])
+        cursor = await conn.execute(
+            'SELECT * FROM tickets WHERE resident_id=? AND id LIKE ? LIMIT 2',
+            (user['id'], prefix + '%'),
+        )
+        tickets = await cursor.fetchall()
+        if len(tickets) != 1:
+            return 'Обращение не найдено.', keyboard([['Мои обращения']])
+        return await resident_ticket_card(conn, tickets[0], user)
     if text == 'Мои обращения':
         cursor = await conn.execute(
             'SELECT * FROM tickets WHERE resident_id=? ORDER BY created_at DESC LIMIT 5',
@@ -598,7 +744,9 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
             lines.append(
                 f"• №{ticket['id'][:8]} — {ticket['location']} — {STATUS_LABELS[ticket['status']]}"
             )
-        return '\n'.join(lines), keyboard([['Сообщить о проблеме'], ['Меню']])
+        buttons = [[f"Обращение #{ticket['id'][:8]}"] for ticket in rows]
+        buttons.extend([['Сообщить о проблеме'], ['Меню']])
+        return '\n'.join(lines), keyboard(buttons)
     if text == 'Сообщить о проблеме':
         await save_dialog(conn, user_id, 'category', {}, timestamp)
         labels = list(CATEGORIES)
@@ -646,25 +794,53 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
     if state == 'description':
         if not 10 <= len(text) <= 4000:
             return 'Описание должно содержать от 10 до 4000 символов.', keyboard([['Отмена']])
-        ticket_id = str(uuid4())
-        await conn.execute(
-            'INSERT INTO tickets(id,house_id,resident_id,category,location,description,status,created_at,updated_at) '
-            "VALUES(?,?,?,?,?,?,'new',?,?)",
-            (ticket_id, user['house_id'], user['id'], draft['category'], draft['location'], text,
-             timestamp, timestamp),
-        )
-        await conn.execute(
-            'INSERT INTO events(ticket_id,actor_id,kind,status,text,created_at) VALUES(?,?,?,?,?,?)',
-            (ticket_id, user['id'], 'created', 'new', text, timestamp),
-        )
-        await conn.execute('UPDATE tickets SET due_at=? WHERE id=?',
-                           (calculate_due_at('normal', timestamp), ticket_id))
-        await save_dialog(conn, user_id, 'idle', {}, timestamp)
+        draft['description'] = text
+        incident = await matching_incident(conn, user, draft)
+        if incident:
+            draft['suggested_incident_id'] = incident['id']
+            await save_dialog(conn, user_id, 'incident_choice', draft, timestamp)
+            return (
+                'В вашем доме уже зафиксирована похожая общая проблема.\n\n'
+                f"Категория: {CATEGORY_LABELS[incident['category']]}\n"
+                f"Место: {incident['location']}\n"
+                f"Срочность: {PRIORITY_LABELS[incident['priority']]}\n\n"
+                'Хотите присоединить обращение к этой проблеме?',
+                keyboard([['Да, присоединить'], ['Создать отдельное обращение']]),
+            )
+        await save_dialog(conn, user_id, 'review', draft, timestamp)
+        return ticket_review(draft)
+    if state == 'incident_choice':
+        if text not in {'Да, присоединить', 'Создать отдельное обращение'}:
+            return 'Выберите один из вариантов.', keyboard([['Да, присоединить'], ['Создать отдельное обращение']])
+        if text == 'Да, присоединить':
+            draft['incident_id'] = draft.get('suggested_incident_id')
+        draft.pop('suggested_incident_id', None)
+        await save_dialog(conn, user_id, 'review', draft, timestamp)
+        return ticket_review(draft)
+    if state == 'review':
+        if text == 'Изменить':
+            await save_dialog(conn, user_id, 'category', {}, timestamp)
+            labels = list(CATEGORIES)
+            return 'Выберите категорию проблемы заново.', keyboard([
+                labels[0:2], labels[2:4], labels[4:6], labels[6:] + ['Отмена'],
+            ])
+        if text != 'Отправить':
+            return ticket_review(draft)
+        ticket_id = await create_resident_ticket(conn, user, draft, timestamp)
+        await save_dialog(conn, user_id, 'after_created', {'ticket_id': ticket_id}, timestamp)
         return (
-            f'Обращение №{ticket_id[:8]} зарегистрировано и передано в очередь дома. '
-            'Здесь появятся уведомления об изменении статуса.',
-            keyboard([['Мои обращения'], ['Сообщить о проблеме']]),
+            f'Обращение №{ticket_id[:8]} зарегистрировано.',
+            keyboard([['Открыть обращение'], ['Мои обращения']]),
         )
+    if state == 'after_created' and text == 'Открыть обращение':
+        cursor = await conn.execute(
+            'SELECT * FROM tickets WHERE id=? AND resident_id=?',
+            (draft.get('ticket_id'), user['id']),
+        )
+        ticket = await cursor.fetchone()
+        if ticket is None:
+            return 'Обращение не найдено.', keyboard([['Мои обращения']])
+        return await resident_ticket_card(conn, ticket, user)
     return menu()
 
 

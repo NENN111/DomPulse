@@ -65,8 +65,18 @@ class Event(BaseModel):
     created_at: str
 
 
+class TicketAttachment(BaseModel):
+    id: int
+    source: str
+    type: str
+    external_id: str | None = None
+    metadata: dict
+    created_at: str
+
+
 class TicketDetail(Ticket):
     events: list[Event]
+    attachments: list[TicketAttachment] = Field(default_factory=list)
 
 
 class Profile(BaseModel):
