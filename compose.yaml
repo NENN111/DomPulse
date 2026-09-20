@@ -1,0 +1,39 @@
+services:
+  api:
+    build: .
+    environment:
+      DOMPULSE_DB: "/data/dompulse.db"
+      MAX_WEBHOOK_SECRET: "${MAX_WEBHOOK_SECRET:?MAX_WEBHOOK_SECRET is required}"
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - dompulse-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+  max-worker:
+    build: .
+    profiles: ["max"]
+    command: ["python", "-m", "app.outbox"]
+    environment:
+      DOMPULSE_DB: "/data/dompulse.db"
+      MAX_API_BASE: "${MAX_API_BASE:?MAX_API_BASE is required}"
+      MAX_BOT_TOKEN: "${MAX_BOT_TOKEN:?MAX_BOT_TOKEN is required}"
+    volumes:
+      - dompulse-data:/data
+    restart: unless-stopped
+  max-polling:
+    build: .
+    profiles: ["polling"]
+    command: ["python", "-m", "app.polling"]
+    environment:
+      DOMPULSE_DB: "/data/dompulse.db"
+      MAX_API_BASE: "${MAX_API_BASE:?MAX_API_BASE is required}"
+      MAX_BOT_TOKEN: "${MAX_BOT_TOKEN:?MAX_BOT_TOKEN is required}"
+    volumes:
+      - dompulse-data:/data
+    restart: unless-stopped
+volumes:
+  dompulse-data:
