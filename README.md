@@ -158,3 +158,16 @@ Seed создаёт только вымышленные дома и пользо
 - UI использует текущий REST API; роли и изоляция остаются серверными.
 
 Чек-лист сдачи: [docs/submission-checklist.md](docs/submission-checklist.md).
+
+
+## Округа Москвы для операторов
+
+Домам и операторам можно назначить административные округа Москвы. Оператор видит заявки всех домов назначенных ему округов.
+
+```powershell
+.\.venv\Scripts\python -m app.operator_access --db .local/dompulse.db --house-id house-1 --district ЦАО
+.\.venv\Scripts\python -m app.operator_access --db .local/dompulse.db --operator-id max-operator-123 --district ЦАО --district ЮАО
+.\.venv\Scripts\python -m app.operator_access --db .local/dompulse.db --list
+```
+
+При авторизации оператора кодом его первичный округ наследуется автоматически.

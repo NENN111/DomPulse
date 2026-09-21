@@ -11,6 +11,7 @@ from fastapi import HTTPException, Request
 
 from .db import AsyncDatabase, token_hash
 from .analytics import house_metrics
+from .access import allowed_house_ids, can_access_house, district_house_ids, house_district
 from .sla import calculate_due_at, is_overdue
 from .residency import begin_verified_link, display_name, normalize_house_address
 
@@ -210,6 +211,11 @@ async def enroll_with_code(conn, user_id: int, payload: dict[str, Any], code: st
     )
     await conn.execute('INSERT INTO max_links(max_user_id,user_id,linked_at) VALUES(?,?,?)',
                        (user_id, internal_id, timestamp))
+    if enrollment['role'] == 'operator':
+        cursor = await conn.execute('SELECT district FROM house_districts WHERE house_id=?', (enrollment['house_id'],))
+        district = await cursor.fetchone()
+        if district:
+            await conn.execute('INSERT OR IGNORE INTO operator_districts(user_id,district) VALUES(?,?)', (internal_id, district['district']))
     await conn.execute('UPDATE enrollment_codes SET used_count=used_count+1 WHERE id=?', (enrollment['id'],))
     await conn.execute('DELETE FROM max_link_attempts WHERE max_user_id=?', (user_id,))
     return await linked_user(conn, user_id), None
@@ -227,12 +233,14 @@ async def notify_ticket_resident(conn, ticket, text: str, timestamp: str, confir
     await queue_message(conn, link['max_user_id'], text, attachments, timestamp)
 
 
-async def operator_queue(conn, user, user_id: int, timestamp: str):
+async def operator_queue(conn, user, user_id: int, timestamp: str, district: str | None = None):
+    house_ids = await __import__('app.access', fromlist=['allowed_house_ids']).allowed_house_ids(conn, user)
+    marks = ','.join('?' for _ in house_ids)
     cursor = await conn.execute(
-        "SELECT * FROM tickets WHERE house_id=? AND status!='confirmed' "
+        f"SELECT * FROM tickets WHERE house_id IN ({marks}) AND status!='confirmed' "
         "ORDER BY CASE WHEN due_at IS NOT NULL AND due_at<? AND first_response_at IS NULL THEN 0 ELSE 1 END, "
         "CASE priority WHEN 'emergency' THEN 0 WHEN 'urgent' THEN 1 ELSE 2 END, created_at LIMIT 5",
-        (user['house_id'], timestamp),
+        (*house_ids, timestamp),
     )
     tickets = await cursor.fetchall()
     if not tickets:
@@ -399,7 +407,7 @@ def format_minutes(value: float | None) -> str:
 
 
 async def operator_metrics(conn, user, user_id: int, timestamp: str):
-    metrics = await house_metrics(conn, user['house_id'])
+    metrics = await house_metrics(conn, house_ids=await allowed_house_ids(conn, user))
     active = [ticket for ticket in metrics['tickets'] if ticket['status'] != 'confirmed']
     groups = similar_groups(active)
     categories = ', '.join(
@@ -633,6 +641,10 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
             return await operator_insights(conn, user, user_id, timestamp)
         if text in {'Очередь дома', 'Обновить очередь'}:
             return await operator_queue(conn, user, user_id, timestamp)
+        if text == '\u041e\u043a\u0440\u0443\u0433\u0430 \u0437\u0430\u044f\u0432\u043e\u043a':
+            cur = await conn.execute('SELECT district FROM operator_districts WHERE user_id=? ORDER BY district', (user['id'],))
+            values = [row['district'] for row in await cur.fetchall()]
+            return '\u0414\u043e\u0441\u0442\u0443\u043f\u043d\u044b\u0435 \u043e\u043a\u0440\u0443\u0433\u0430: ' + (', '.join(values) or '\u043e\u043a\u0440\u0443\u0433 \u043f\u0435\u0440\u0432\u0438\u0447\u043d\u043e\u0433\u043e \u0434\u043e\u043c\u0430')
         if state == 'operator_insights' and text.startswith('Открыть сигнал '):
             try:
                 index = int(text.removeprefix('Открыть сигнал ').strip()) - 1
@@ -666,8 +678,8 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
             if len(prefix) != 8 or not prefix.isalnum():
                 return 'Не удалось открыть заявку. Вернитесь в очередь.', keyboard([['Очередь дома']])
             cursor = await conn.execute(
-                'SELECT * FROM tickets WHERE house_id=? AND id LIKE ? LIMIT 2',
-                (user['house_id'], prefix + '%'),
+                "SELECT t.*, COALESCE(hd.district, '????? ?? ??????') AS district_label FROM tickets t LEFT JOIN house_districts hd ON hd.house_id=t.house_id WHERE t.id LIKE ? AND (t.house_id=? OR t.house_id IN (SELECT hd2.house_id FROM house_districts hd2 JOIN operator_districts od ON od.district=hd2.district WHERE od.user_id=?)) LIMIT 2",
+                (prefix + '%', user['house_id'], user['id']),
             )
             tickets = await cursor.fetchall()
             if len(tickets) != 1:

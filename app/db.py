@@ -9,6 +9,10 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS houses (
  id TEXT PRIMARY KEY, address TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS house_districts (house_id TEXT PRIMARY KEY REFERENCES houses(id), district TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_house_districts_district ON house_districts(district);
+CREATE TABLE IF NOT EXISTS operator_districts (user_id TEXT NOT NULL REFERENCES users(id), district TEXT NOT NULL, PRIMARY KEY(user_id,district));
+CREATE INDEX IF NOT EXISTS idx_operator_districts_district ON operator_districts(district);
 CREATE TABLE IF NOT EXISTS users (
  id TEXT PRIMARY KEY, name TEXT NOT NULL,
  role TEXT NOT NULL CHECK(role IN ('resident', 'operator')),

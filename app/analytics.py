@@ -8,9 +8,14 @@ def minutes_between(start: str, end: str) -> float:
     return (datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds() / 60
 
 
-async def house_metrics(conn, house_id: str) -> dict:
-    cursor = await conn.execute('SELECT * FROM tickets WHERE house_id=?', (house_id,))
-    tickets = [dict(row) for row in await cursor.fetchall()]
+async def house_metrics(conn, house_id: str | None = None, house_ids: list[str] | None = None) -> dict:
+    ids = house_ids or ([house_id] if house_id else [])
+    if ids:
+        marks = ','.join('?' for _ in ids)
+        cursor = await conn.execute(f'SELECT * FROM tickets WHERE house_id IN ({marks})', tuple(ids))
+        tickets = [dict(row) for row in await cursor.fetchall()]
+    else:
+        tickets = []
     active = [ticket for ticket in tickets if ticket['status'] != 'confirmed']
     overdue = [ticket for ticket in tickets if is_overdue(ticket['due_at'], ticket['first_response_at'])]
     first_responses = [

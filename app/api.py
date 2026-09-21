@@ -12,6 +12,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from .db import AsyncDatabase, token_hash
 from .models import CommentCreate, GosuslugiResidencyClaim, Profile, StatusChange, Ticket, TicketCreate, TicketDetail
 from .analytics import house_metrics
+from .access import allowed_house_ids, can_access_house
 from .max_webhook import keyboard, parse_update, queue_message, save_dialog, store_update, verify_secret
 from .sla import calculate_due_at
 from .residency import complete_verified_link
@@ -75,7 +76,7 @@ def create_app(db_path: str | None = None):
     async def accessible(conn, ticket_id, user):
         cursor = await conn.execute('SELECT * FROM tickets WHERE id=?', (ticket_id,))
         row = await cursor.fetchone()
-        if row is None or row['house_id'] != user['house_id']:
+        if row is None or not await can_access_house(conn, user, row['house_id']):
             raise HTTPException(404, 'Обращение не найдено')
         if user['role'] == 'resident' and row['resident_id'] != user['id']:
             raise HTTPException(404, 'Обращение не найдено')
@@ -165,7 +166,7 @@ def create_app(db_path: str | None = None):
         if user['role'] != 'operator':
             raise HTTPException(403, 'Показатели дома доступны сотруднику УК')
         async with db.connect() as conn:
-            result = await house_metrics(conn, user['house_id'])
+            result = await house_metrics(conn, house_ids=await allowed_house_ids(conn, user))
         result.pop('tickets')
         return result
 
@@ -188,11 +189,13 @@ def create_app(db_path: str | None = None):
 
     @app.get('/api/tickets', response_model=list[Ticket])
     async def list_tickets(limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0), user=Depends(actor)):
-        clause, args = 'house_id=?', [user['house_id']]
-        if user['role'] == 'resident':
-            clause += ' AND resident_id=?'
-            args.append(user['id'])
         async with db.connect() as conn:
+            houses = await allowed_house_ids(conn, user)
+            marks = ','.join('?' for _ in houses)
+            clause, args = f'house_id IN ({marks})', list(houses)
+            if user['role'] == 'resident':
+                clause += ' AND resident_id=?'
+                args.append(user['id'])
             cursor = await conn.execute(
                 f'SELECT * FROM tickets WHERE {clause} ORDER BY created_at DESC, id LIMIT ? OFFSET ?',
                 (*args, limit, offset),

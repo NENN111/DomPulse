@@ -25,6 +25,7 @@ def main():
         conn.executemany('INSERT INTO houses VALUES(?,?)',
                          [('house-1', 'Тестовый город, Учебная улица, дом 1'),
                           ('house-2', 'Тестовый город, Учебная улица, дом 2')])
+        conn.executemany('INSERT INTO house_districts VALUES(?,?)', [('house-1', '\u0426\u0410\u041e'), ('house-2', '\u0421\u0410\u041e')])
         for uid, name, role, house in accounts:
             token = secrets.token_urlsafe(32)
             conn.execute('INSERT INTO users VALUES(?,?,?,?,?)', (uid, name, role, house, token_hash(token)))
