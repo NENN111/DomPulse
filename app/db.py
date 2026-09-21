@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS house_districts (house_id TEXT PRIMARY KEY REFERENCES
 CREATE INDEX IF NOT EXISTS idx_house_districts_district ON house_districts(district);
 CREATE TABLE IF NOT EXISTS operator_districts (user_id TEXT NOT NULL REFERENCES users(id), district TEXT NOT NULL, PRIMARY KEY(user_id,district));
 CREATE INDEX IF NOT EXISTS idx_operator_districts_district ON operator_districts(district);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_operator_district ON operator_districts(district);
 CREATE TABLE IF NOT EXISTS users (
  id TEXT PRIMARY KEY, name TEXT NOT NULL,
  role TEXT NOT NULL CHECK(role IN ('resident', 'operator')),

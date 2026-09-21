@@ -3,6 +3,7 @@ import hmac
 import json
 import re
 import secrets
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
@@ -14,6 +15,7 @@ from .analytics import house_metrics
 from .access import allowed_house_ids, can_access_house, district_house_ids, house_district
 from .sla import calculate_due_at, is_overdue
 from .residency import begin_verified_link, display_name, normalize_house_address
+from .geocoder import GeocoderError, geocode_address
 
 MAX_WEBHOOK_BYTES = 256 * 1024
 
@@ -559,8 +561,18 @@ async def save_dialog(conn, user_id: int, state: str, draft: dict[str, Any], tim
 def unlinked_menu() -> tuple[str, list[dict[str, Any]]]:
     return (
         'Профиль пока не привязан к дому. Выберите способ подтверждения адреса или введите /код <одноразовый-код>.',
-        keyboard([['Подтянуть адрес из Госуслуг'], ['Ввести адрес вручную'], ['У меня есть код']]),
+        keyboard([['Подтянуть адрес из Госуслуг'], ['Ввести адрес вручную']]),
     )
+
+
+async def link_geocoded_resident(conn, user_id: int, payload: dict[str, Any], address: str, district: str, timestamp: str):
+    house_id = 'yandex-' + hashlib.sha256(address.casefold().encode('utf-8')).hexdigest()[:24]
+    await conn.execute('INSERT OR IGNORE INTO houses(id,address) VALUES(?,?)', (house_id, address))
+    await conn.execute('INSERT INTO house_districts(house_id,district) VALUES(?,?) ON CONFLICT(house_id) DO UPDATE SET district=excluded.district', (house_id, district))
+    internal_id = f'max-resident-{user_id}'
+    await conn.execute('INSERT OR IGNORE INTO users(id,name,role,house_id,token_hash) VALUES(?,?,?,?,?)', (internal_id, display_name(payload, user_id), 'resident', house_id, token_hash(secrets.token_urlsafe(32))))
+    await conn.execute('INSERT OR REPLACE INTO max_links(max_user_id,user_id,linked_at) VALUES(?,?,?)', (user_id, internal_id, timestamp))
+    return await linked_user(conn, user_id)
 
 
 async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp: str):
@@ -611,6 +623,15 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
                 return unlinked_menu()
             if not 5 <= len(text) <= 300:
                 return 'Адрес должен содержать от 5 до 300 символов.', keyboard([['Отмена']])
+            if os.getenv('YANDEX_MAPS_API_KEY'):
+                try:
+                    verified = await geocode_address(text)
+                except GeocoderError as exc:
+                    return str(exc), keyboard([['??????']])
+                user = await link_geocoded_resident(conn, user_id, payload, verified.normalized_address, verified.district, timestamp)
+                await save_dialog(conn, user_id, 'idle', {}, timestamp)
+                reply, attachments = menu(user['role'])
+                return f'????? ???????????: {verified.district}.\n\n' + reply, attachments
             await save_dialog(conn, user_id, 'manual_code', {'address': text}, timestamp)
             return (
                 'Адрес сохранён. Теперь введите одноразовый код вашей УК в формате '
