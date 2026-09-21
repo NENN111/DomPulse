@@ -205,7 +205,7 @@ async def enroll_with_code(conn, user_id: int, payload: dict[str, Any], code: st
     display_name = source_user.get('name') if isinstance(source_user, dict) else None
     internal_id = f'max-{enrollment["role"]}-{user_id}'
     await conn.execute(
-        'INSERT INTO users(id,name,role,house_id,token_hash) VALUES(?,?,?,?,?)',
+        'INSERT OR IGNORE INTO users(id,name,role,house_id,token_hash) VALUES(?,?,?,?,?)',
         (internal_id, display_name or f"Пользователь MAX {user_id}", enrollment['role'], enrollment['house_id'],
          token_hash(secrets.token_urlsafe(32))),
     )
