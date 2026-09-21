@@ -63,6 +63,28 @@ def test_webhook_verifies_secret_deduplicates_and_queues(max_app):
     assert '/код' in message['text']
 
 
+def test_photo_is_kept_when_sent_before_category(max_app):
+    client, db = max_app
+    headers = {'X-Max-Bot-Api-Secret': 'test-webhook-secret'}
+    enroll(client, db, headers, 1450)
+    with db.connect(write=True) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO max_dialogs(max_user_id,state,draft_json,updated_at) VALUES(?,?,?,?)",
+            (1450, 'category', '{}', '2026-01-01T00:00:00+00:00'),
+        )
+    payload = update('photo-image', '', 1450)
+    payload['message']['body']['attachments'] = [{
+        'type': 'image',
+        'payload': {'photo_id': 42787123429, 'token': 'photo-token', 'url': 'https://images.test/photo'},
+    }]
+    response = client.post('/webhooks/max', headers=headers, json=payload)
+    assert response.status_code == 200
+    with db.connect() as conn:
+        dialog = conn.execute('SELECT state,draft_json FROM max_dialogs WHERE max_user_id=1450').fetchone()
+    assert dialog['state'] == 'category'
+    assert json.loads(dialog['draft_json'])['attachments'][0]['external_id'] == '42787123429'
+
+
 def test_chatbot_creates_ticket_without_mini_app(max_app):
     client, db = max_app
     headers = {'X-Max-Bot-Api-Secret': 'test-webhook-secret'}

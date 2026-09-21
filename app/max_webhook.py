@@ -147,9 +147,9 @@ def message_images(payload: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(item, dict) or item.get('type') not in {'image', 'photo'}:
             continue
         data = item.get('payload') if isinstance(item.get('payload'), dict) else item
-        external_id = item.get('id') or data.get('url') or data.get('token')
+        external_id = item.get('id') or data.get('photo_id') or data.get('url') or data.get('token')
         if external_id:
-            result.append({'type': 'image', 'external_id': str(external_id), 'metadata': {k: data[k] for k in ('url','token','width','height','size') if k in data}})
+            result.append({'type': 'image', 'external_id': str(external_id), 'metadata': {k: data[k] for k in ('photo_id','url','token','width','height','size') if k in data}})
     return result
 
 
@@ -667,6 +667,27 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
     state = dialog['state'] if dialog else 'idle'
     draft = json.loads(dialog['draft_json']) if dialog else {}
 
+    incoming_images = message_images(payload)
+    ticket_states = {'category', 'location', 'description', 'incident_choice', 'review'}
+    if user['role'] == 'resident' and incoming_images:
+        if state not in ticket_states:
+            state, draft = 'category', {}
+        known = {item.get('external_id') for item in draft.get('attachments', [])}
+        draft.setdefault('attachments', []).extend(
+            item for item in incoming_images if item['external_id'] not in known
+        )
+        await save_dialog(conn, user_id, state, draft, timestamp)
+        if not text:
+            if state == 'category':
+                return 'Фото добавлено. Выберите категорию проблемы.', keyboard([[name] for name in CATEGORIES] + [['Отмена']])
+            if state == 'location':
+                return 'Фото добавлено. Укажите место проблемы.', keyboard([['Отмена']])
+            if state == 'description':
+                return 'Фото добавлено. Теперь опишите, что произошло.', keyboard([['Отмена']])
+            if state == 'incident_choice':
+                return 'Фото добавлено. Выберите вариант.', keyboard([['Да, присоединить'], ['Создать отдельное обращение']])
+            return ticket_review(draft)
+
     if payload['update_type'] == 'bot_started' or text.lower() in {'/start', 'меню'}:
         await save_dialog(conn, user_id, 'idle', {}, timestamp)
         return menu(user['role'])
@@ -905,9 +926,6 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
         await save_dialog(conn, user_id, 'description', draft, timestamp)
         return 'Опишите, что произошло и когда вы это заметили.', keyboard([['Отмена']])
     if state == 'description':
-        images = message_images(payload)
-        if images:
-            draft.setdefault('attachments', []).extend(images)
         if not 10 <= len(text) <= 4000:
             return 'Описание должно содержать от 10 до 4000 символов.', keyboard([['Отмена']])
         draft['description'] = text
