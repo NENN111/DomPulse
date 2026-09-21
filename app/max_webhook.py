@@ -12,7 +12,7 @@ from fastapi import HTTPException, Request
 
 from .db import AsyncDatabase, token_hash
 from .analytics import house_metrics
-from .access import allowed_house_ids, can_access_house, district_house_ids, house_district
+from .access import MOSCOW_DISTRICTS, allowed_house_ids, can_access_house, district_house_ids, house_district
 from .sla import calculate_due_at, is_overdue
 from .residency import begin_verified_link, display_name, normalize_house_address
 from .geocoder import GeocoderError, geocode_address
@@ -582,8 +582,15 @@ def unlinked_menu() -> tuple[str, list[dict[str, Any]]]:
     )
 
 
-async def link_geocoded_resident(conn, user_id: int, payload: dict[str, Any], address: str, district: str, timestamp: str):
-    house_id = 'yandex-' + hashlib.sha256(address.casefold().encode('utf-8')).hexdigest()[:24]
+def district_keyboard() -> list[dict[str, Any]]:
+    rows = [list(MOSCOW_DISTRICTS[index:index + 3]) for index in range(0, 9, 3)]
+    rows.extend([[district] for district in MOSCOW_DISTRICTS[9:]])
+    rows.append(['Отмена'])
+    return keyboard(rows)
+
+
+async def link_manual_resident(conn, user_id: int, payload: dict[str, Any], address: str, district: str, timestamp: str):
+    house_id = 'address-' + hashlib.sha256(address.casefold().encode('utf-8')).hexdigest()[:24]
     await conn.execute('INSERT OR IGNORE INTO houses(id,address) VALUES(?,?)', (house_id, address))
     await conn.execute('INSERT INTO house_districts(house_id,district) VALUES(?,?) ON CONFLICT(house_id) DO UPDATE SET district=excluded.district', (house_id, district))
     internal_id = f'max-resident-{user_id}'
@@ -646,8 +653,13 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
                 except GeocoderError as exc:
                     return str(exc), keyboard([['Отмена']])
                 if os.getenv('YANDEX_MAPS_ALLOW_STORAGE', '').lower() != 'true':
-                    return 'Адрес проверен, но сохранять данные бесплатного Геокодера нельзя. Подключите коммерческую лицензию или используйте код вашей УК.', keyboard([['Отмена']])
-                user = await link_geocoded_resident(conn, user_id, payload, verified.normalized_address, verified.district, timestamp)
+                    await save_dialog(conn, user_id, 'manual_district', {'address': text}, timestamp)
+                    return (
+                        'Адрес найден. Выберите административный округ Москвы. '
+                        'Бот повторно проверит соответствие адреса выбранному округу.',
+                        district_keyboard(),
+                    )
+                user = await link_manual_resident(conn, user_id, payload, verified.normalized_address, verified.district, timestamp)
                 await save_dialog(conn, user_id, 'idle', {}, timestamp)
                 reply, attachments = menu(user['role'])
                 return f'Адрес подтверждён: {verified.district}.\n\n' + reply, attachments
@@ -657,6 +669,26 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
                 '/код XXXX-XXXX-XXXX-XXXX. Код подтвердит, что выбран правильный дом.',
                 keyboard([['Отмена']]),
             )
+        if state == 'manual_district':
+            if text not in MOSCOW_DISTRICTS:
+                return 'Выберите округ кнопкой ниже.', district_keyboard()
+            address = draft.get('address')
+            if not address:
+                await save_dialog(conn, user_id, 'manual_address', {}, timestamp)
+                return 'Введите адрес дома ещё раз.', keyboard([['Отмена']])
+            try:
+                verified = await geocode_address(address)
+            except GeocoderError as exc:
+                return str(exc), keyboard([['Отмена']])
+            if verified.district != text:
+                return (
+                    'Выбранный округ не соответствует адресу. Выберите правильный округ.',
+                    district_keyboard(),
+                )
+            user = await link_manual_resident(conn, user_id, payload, address, text, timestamp)
+            await save_dialog(conn, user_id, 'idle', {}, timestamp)
+            reply, attachments = menu(user['role'])
+            return f'Адрес и округ {text} подтверждены.\n\n' + reply, attachments
         if text == 'У меня есть код':
             await save_dialog(conn, user_id, 'idle', {}, timestamp)
             return 'Введите код в формате /код XXXX-XXXX-XXXX-XXXX.', keyboard([['Ввести адрес вручную']])

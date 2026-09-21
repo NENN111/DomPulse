@@ -9,6 +9,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api import create_app
+from app import max_webhook
+from app.geocoder import GeocodedAddress
 from app.db import AsyncDatabase, Database, token_hash
 from app.max_api import MaxAPIError, MaxClient
 from app.max_webhook import ticket_review
@@ -705,3 +707,53 @@ def test_gosuslugi_bridge_links_active_temporary_registration(tmp_path, monkeypa
     assert verification['registration_type'] == 'temporary'
     assert verification['subject_hash'] != claim['subject_id']
     assert verification['house_address'] == 'Москва, улица Временная, дом 2'
+
+
+def test_free_geocoder_requires_user_district_confirmation(max_app, monkeypatch):
+    client, db = max_app
+    headers = {'X-Max-Bot-Api-Secret': 'test-webhook-secret'}
+    calls = []
+
+    async def fake_geocode(address):
+        calls.append(address)
+        return GeocodedAddress(
+            '\u0420\u043e\u0441\u0441\u0438\u044f, \u041c\u043e\u0441\u043a\u0432\u0430, \u043f\u0440\u043e\u0441\u043f\u0435\u043a\u0442 \u0412\u0435\u0440\u043d\u0430\u0434\u0441\u043a\u043e\u0433\u043e, 88',
+            '\u0417\u0410\u041e',
+            55.676,
+            37.503,
+        )
+
+    monkeypatch.setenv('YANDEX_MAPS_API_KEY', 'free-test-key')
+    monkeypatch.setenv('YANDEX_MAPS_ALLOW_STORAGE', 'false')
+    monkeypatch.setattr(max_webhook, 'geocode_address', fake_geocode)
+
+    messages = [
+        ('district-start', '/start'),
+        ('district-manual', '\u0412\u0432\u0435\u0441\u0442\u0438 \u0430\u0434\u0440\u0435\u0441 \u0432\u0440\u0443\u0447\u043d\u0443\u044e'),
+        ('district-address', '\u0412\u0435\u0440\u043d\u0430\u0434\u0441\u043a\u043e\u0433\u043e 88'),
+    ]
+    for mid, text_value in messages:
+        response = client.post('/webhooks/max', headers=headers, json=update(mid, text_value, 1880))
+        assert response.status_code == 200
+
+    with db.connect() as conn:
+        dialog = conn.execute('SELECT state,draft_json FROM max_dialogs WHERE max_user_id=1880').fetchone()
+        assert conn.execute('SELECT COUNT(*) FROM max_links WHERE max_user_id=1880').fetchone()[0] == 0
+    assert dialog['state'] == 'manual_district'
+    assert json.loads(dialog['draft_json']) == {'address': '\u0412\u0435\u0440\u043d\u0430\u0434\u0441\u043a\u043e\u0433\u043e 88'}
+
+    client.post('/webhooks/max', headers=headers, json=update('district-wrong', '\u0426\u0410\u041e', 1880))
+    with db.connect() as conn:
+        assert conn.execute('SELECT COUNT(*) FROM max_links WHERE max_user_id=1880').fetchone()[0] == 0
+
+    client.post('/webhooks/max', headers=headers, json=update('district-correct', '\u0417\u0410\u041e', 1880))
+    with db.connect() as conn:
+        linked = conn.execute(
+            'SELECT h.id,h.address,hd.district FROM max_links l '
+            'JOIN users u ON u.id=l.user_id JOIN houses h ON h.id=u.house_id '
+            'JOIN house_districts hd ON hd.house_id=h.id WHERE l.max_user_id=1880'
+        ).fetchone()
+    assert linked['id'].startswith('address-')
+    assert linked['address'] == '\u0412\u0435\u0440\u043d\u0430\u0434\u0441\u043a\u043e\u0433\u043e 88'
+    assert linked['district'] == '\u0417\u0410\u041e'
+    assert calls == ['\u0412\u0435\u0440\u043d\u0430\u0434\u0441\u043a\u043e\u0433\u043e 88'] * 3
