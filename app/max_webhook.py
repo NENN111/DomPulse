@@ -453,7 +453,26 @@ async def operator_metrics(conn, user, user_id: int, timestamp: str):
     return text, keyboard([['Очередь дома'], ['Общие проблемы дома'], ['Показатели дома']])
 
 
-def operator_ticket_card(ticket) -> tuple[str, list[dict[str, Any]]]:
+async def operator_ticket_card(conn, ticket) -> tuple[str, list[dict[str, Any]]]:
+    cursor = await conn.execute(
+        "SELECT metadata_json FROM ticket_attachments WHERE ticket_id=? AND type='image' ORDER BY id",
+        (ticket['id'],),
+    )
+    rows = await cursor.fetchall()
+    images = []
+    for row in rows:
+        try:
+            metadata = json.loads(row['metadata_json'])
+        except (TypeError, ValueError):
+            continue
+        payload = {}
+        if metadata.get('token'):
+            payload['token'] = metadata['token']
+        elif isinstance(metadata.get('url'), str) and metadata['url'].startswith(('https://', 'http://')):
+            payload['url'] = metadata['url']
+        if payload:
+            images.append({'type': 'image', 'payload': payload})
+
     lines = [
         f"Заявка #{ticket['id'][:8]}",
         f"Категория: {CATEGORY_LABELS[ticket['category']]}",
@@ -462,6 +481,7 @@ def operator_ticket_card(ticket) -> tuple[str, list[dict[str, Any]]]:
         f"Приоритет: {PRIORITY_LABELS[ticket['priority']]}",
         f"Срок реакции: {format_datetime(ticket['due_at'])}"
         f"{' · ПРОСРОЧЕНО' if is_overdue(ticket['due_at'], ticket['first_response_at']) else ''}",
+        f"Фото: {len(rows)}",
         '', ticket['description'],
     ]
     buttons: list[list[str]] = []
@@ -469,7 +489,7 @@ def operator_ticket_card(ticket) -> tuple[str, list[dict[str, Any]]]:
     if action:
         buttons.append([action[0]])
     buttons.extend([['Ответить жителю'], ['Изменить срочность'], ['Очередь дома']])
-    return '\n'.join(lines), keyboard(buttons)
+    return '\n'.join(lines), images + keyboard(buttons)
 
 
 async def resident_ticket_card(conn, ticket, user):
@@ -781,7 +801,7 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
             await save_dialog(conn, user_id, 'operator_ticket', {
                 'ticket_id': ticket['id'], 'status': ticket['status'],
             }, timestamp)
-            return operator_ticket_card(ticket)
+            return await operator_ticket_card(conn, ticket)
         if state == 'operator_ticket':
             if text == 'Ответить жителю':
                 await save_dialog(conn, user_id, 'operator_reply', draft, timestamp)
@@ -825,7 +845,7 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
                 conn, user_id, 'operator_ticket',
                 {'ticket_id': ticket['id'], 'status': updated['status']}, timestamp,
             )
-            return operator_ticket_card(updated)
+            return await operator_ticket_card(conn, updated)
         if state == 'operator_priority':
             priorities = {'Обычная срочность': 'normal', 'Срочно': 'urgent', 'Авария': 'emergency'}
             priority = priorities.get(text)
@@ -851,7 +871,7 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
             cursor = await conn.execute('SELECT * FROM tickets WHERE id=?', (ticket['id'],))
             updated = await cursor.fetchone()
             await save_dialog(conn, user_id, 'operator_ticket', {'ticket_id': ticket['id'], 'status': updated['status']}, timestamp)
-            return operator_ticket_card(updated)
+            return await operator_ticket_card(conn, updated)
         if state == 'operator_comment':
             if not 3 <= len(text) <= 4000:
                 return 'Комментарий должен содержать от 3 до 4000 символов.', keyboard([['Отмена']])

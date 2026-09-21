@@ -184,8 +184,14 @@ def test_operator_works_queue_and_sets_priority_inside_max(max_app):
     ]
     for mid, text in resident_flow:
         assert client.post('/webhooks/max', headers=headers, json=update(mid, text)).status_code == 200
-    with db.connect() as conn:
+    with db.connect(write=True) as conn:
         ticket = dict(conn.execute('SELECT * FROM tickets').fetchone())
+        conn.execute(
+            'INSERT INTO ticket_attachments(ticket_id,source,type,external_id,metadata_json,created_at) '
+            'VALUES(?,?,?,?,?,?)',
+            (ticket['id'], 'max', 'image', 'photo-operator-test',
+             json.dumps({'token': 'photo-token', 'url': 'https://images.test/photo'}), ticket['created_at']),
+        )
     prefix = ticket['id'][:8]
 
     enroll(client, db, headers, 777, role='operator')
@@ -207,11 +213,19 @@ def test_operator_works_queue_and_sets_priority_inside_max(max_app):
         resident_notice = dict(conn.execute(
             'SELECT * FROM max_outbox WHERE max_user_id=12345 ORDER BY id DESC LIMIT 1'
         ).fetchone())
+        operator_card = dict(conn.execute(
+            "SELECT * FROM max_outbox WHERE max_user_id=777 AND attachments_json LIKE '%photo-token%' "
+            'ORDER BY id DESC LIMIT 1'
+        ).fetchone())
     assert updated['priority'] == 'emergency'
     assert updated['status'] == 'accepted'
     assert updated['first_response_at'] is not None
     assert [event['kind'] for event in events] == ['created', 'priority_changed', 'status_changed']
     assert 'принято' in resident_notice['text']
+    card_attachments = json.loads(operator_card['attachments_json'])
+    assert 'Фото: 1' in operator_card['text']
+    assert card_attachments[0] == {'type': 'image', 'payload': {'token': 'photo-token'}}
+    assert card_attachments[-1]['type'] == 'inline_keyboard'
 
 
 def test_operator_sees_grouped_common_problem_signal(max_app):
