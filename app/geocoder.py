@@ -40,7 +40,7 @@ def _district(payload):
 async def geocode_address(address: str) -> GeocodedAddress:
     key=os.getenv('YANDEX_MAPS_API_KEY')
     if not key: raise GeocoderError('Геокодер Яндекса не настроен')
-    url=os.getenv('YANDEX_GEOCODER_URL','https://geocode-maps.yandex.ru/1.x/')
+    url=os.getenv('YANDEX_GEOCODER_URL','https://geocode-maps.yandex.ru/v1/')
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             response=await client.get(url, params={'apikey':key,'geocode':address,'format':'json','lang':'ru_RU'})
