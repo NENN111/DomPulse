@@ -507,7 +507,7 @@ def ticket_review(draft: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
         f"Категория: {CATEGORY_LABELS[draft['category']]}\n"
         f"Место: {draft['location']}\n"
         f"Описание: {draft['description']}\n"
-        f'????: {len(draft.get("attachments", []))} ??.'
+        f'Фото: {len(draft.get("attachments", []))} шт.'
     )
     return text, keyboard([['Отправить'], ['Изменить'], ['Отмена']])
 
@@ -644,13 +644,13 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
                 try:
                     verified = await geocode_address(text)
                 except GeocoderError as exc:
-                    return str(exc), keyboard([['??????']])
+                    return str(exc), keyboard([['Отмена']])
                 if os.getenv('YANDEX_MAPS_ALLOW_STORAGE', '').lower() != 'true':
-                    return '????? ???????? ????????, ?? ?????????? ???????? ?? ????????? ????????? ?????????. ?????????? ???????????? ???????? ??? ??????????? ???????? ????? ???????? ??????.', keyboard([['??????']])
+                    return 'Адрес проверен, но сохранять данные бесплатного Геокодера нельзя. Подключите коммерческую лицензию или используйте код вашей УК.', keyboard([['Отмена']])
                 user = await link_geocoded_resident(conn, user_id, payload, verified.normalized_address, verified.district, timestamp)
                 await save_dialog(conn, user_id, 'idle', {}, timestamp)
                 reply, attachments = menu(user['role'])
-                return f'????? ???????????: {verified.district}.\n\n' + reply, attachments
+                return f'Адрес подтверждён: {verified.district}.\n\n' + reply, attachments
             await save_dialog(conn, user_id, 'manual_code', {'address': text}, timestamp)
             return (
                 'Адрес сохранён. Теперь введите одноразовый код вашей УК в формате '
@@ -739,7 +739,7 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
             if len(prefix) != 8 or not prefix.isalnum():
                 return 'Не удалось открыть заявку. Вернитесь в очередь.', keyboard([['Очередь дома']])
             cursor = await conn.execute(
-                "SELECT t.*, COALESCE(hd.district, '????? ?? ??????') AS district_label FROM tickets t LEFT JOIN house_districts hd ON hd.house_id=t.house_id WHERE t.id LIKE ? AND (t.house_id=? OR t.house_id IN (SELECT hd2.house_id FROM house_districts hd2 JOIN operator_districts od ON od.district=hd2.district WHERE od.user_id=?)) LIMIT 2",
+                "SELECT t.*, COALESCE(hd.district, 'Округ не указан') AS district_label FROM tickets t LEFT JOIN house_districts hd ON hd.house_id=t.house_id WHERE t.id LIKE ? AND (t.house_id=? OR t.house_id IN (SELECT hd2.house_id FROM house_districts hd2 JOIN operator_districts od ON od.district=hd2.district WHERE od.user_id=?)) LIMIT 2",
                 (prefix + '%', user['house_id'], user['id']),
             )
             tickets = await cursor.fetchall()

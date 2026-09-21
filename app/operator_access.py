@@ -1,4 +1,4 @@
-"""Настройка округов Моск#2ы для домов и операторов."""
+"""Настройка округов Москвы для домов и операторов."""
 import argparse
 from .access import MOSCOW_DISTRICTS
 from .db import Database
@@ -16,8 +16,8 @@ def main():
             if not u or u['role']!='operator': raise SystemExit(f'Оператор не найден: {a.operator_id}')
             c.execute('DELETE FROM operator_districts WHERE user_id=?',(a.operator_id,)); c.executemany('INSERT INTO operator_districts(user_id,district) VALUES(?,?)',[(a.operator_id,d) for d in dict.fromkeys(a.district)])
         if a.list:
-            for r in c.execute("SELECT h.id,COALESCE(d.district,'Округ не указан') district,h.address FROM houses h LEFT JOIN house_districts d ON d.house_id=h.id ORDER BY h.id").fetchall(): print(f"{r['id']}: {r['district']} ? {r['address']}")
-        if not a.list and not a.house_id and not a.operator_id: p.error('??????? --house-id/--operator-id ??? --list')
-    if a.house_id and a.district: print(f"??? {a.house_id} ???????? ? ?????? {a.district[0]}.")
-    if a.operator_id and a.district: print(f"???????? {a.operator_id} ????? ??????: {', '.join(dict.fromkeys(a.district))}.")
+            for r in c.execute("SELECT h.id,COALESCE(d.district,'Округ не указан') district,h.address FROM houses h LEFT JOIN house_districts d ON d.house_id=h.id ORDER BY h.id").fetchall(): print(f"{r['id']}: {r['district']} — {r['address']}")
+        if not a.list and not a.house_id and not a.operator_id: p.error('укажите --house-id/--operator-id или --list')
+    if a.house_id and a.district: print(f"Дом {a.house_id} привязан к округу {a.district[0]}.")
+    if a.operator_id and a.district: print(f"Оператор {a.operator_id} ведёт округа: {', '.join(dict.fromkeys(a.district))}.")
 if __name__=='__main__': main()

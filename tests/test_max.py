@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from app.api import create_app
 from app.db import AsyncDatabase, Database, token_hash
 from app.max_api import MaxAPIError, MaxClient
+from app.max_webhook import ticket_review
 from app.outbox import deliver_one, main as worker_main
 from app.sla import scan_overdue
 
@@ -83,6 +84,16 @@ def test_photo_is_kept_when_sent_before_category(max_app):
         dialog = conn.execute('SELECT state,draft_json FROM max_dialogs WHERE max_user_id=1450').fetchone()
     assert dialog['state'] == 'category'
     assert json.loads(dialog['draft_json'])['attachments'][0]['external_id'] == '42787123429'
+
+
+def test_ticket_review_shows_photo_count():
+    text, _ = ticket_review({
+        'category': 'yard',
+        'location': 'Двор',
+        'description': 'Повреждено ограждение.',
+        'attachments': [{'type': 'image', 'external_id': 'photo-1'}],
+    })
+    assert 'Фото: 1 шт.' in text
 
 
 def test_chatbot_creates_ticket_without_mini_app(max_app):

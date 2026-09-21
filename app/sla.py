@@ -11,7 +11,7 @@ def calculate_due_at(priority: str, created_at: str) -> str:
 
 
 def is_overdue(due_at: str | None, first_response_at: str | None) -> bool:
-    """Return whether the ?? has missed its first-response SLA."""
+    """Проверить, нарушен ли срок первого ответа по заявке."""
     if not due_at or first_response_at:
         return False
     return datetime.fromisoformat(due_at) < datetime.now(timezone.utc)
