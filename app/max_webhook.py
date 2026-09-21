@@ -138,6 +138,21 @@ def message_text(payload: dict[str, Any]) -> str:
     return (body.get('text') or '').strip() if isinstance(body, dict) else ''
 
 
+def message_images(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    message = payload.get('message') or {}
+    body = message.get('body') if isinstance(message, dict) else None
+    attachments = body.get('attachments', []) if isinstance(body, dict) else []
+    result = []
+    for item in attachments if isinstance(attachments, list) else []:
+        if not isinstance(item, dict) or item.get('type') not in {'image', 'photo'}:
+            continue
+        data = item.get('payload') if isinstance(item.get('payload'), dict) else item
+        external_id = item.get('id') or data.get('url') or data.get('token')
+        if external_id:
+            result.append({'type': 'image', 'external_id': str(external_id), 'metadata': {k: data[k] for k in ('url','token','width','height','size') if k in data}})
+    return result
+
+
 def stored_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Avoid retaining a one-time enrollment code in the webhook event log."""
     safe = json.loads(json.dumps(payload, ensure_ascii=False))
@@ -492,7 +507,7 @@ def ticket_review(draft: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
         f"Категория: {CATEGORY_LABELS[draft['category']]}\n"
         f"Место: {draft['location']}\n"
         f"Описание: {draft['description']}\n"
-        'Фото: не добавлено'
+        f'????: {len(draft.get("attachments", []))} ??.'
     )
     return text, keyboard([['Отправить'], ['Изменить'], ['Отмена']])
 
@@ -529,6 +544,8 @@ async def create_resident_ticket(conn, user, draft: dict[str, Any], timestamp: s
         'INSERT INTO events(ticket_id,actor_id,kind,status,text,created_at) VALUES(?,?,?,?,?,?)',
         (ticket_id, user['id'], 'created', 'new', draft['description'], timestamp),
     )
+    for attachment in draft.get('attachments', []):
+        await conn.execute('INSERT INTO ticket_attachments(ticket_id,source,type,external_id,metadata_json,created_at) VALUES(?,?,?,?,?,?)', (ticket_id, 'max', attachment['type'], attachment['external_id'], json.dumps(attachment.get('metadata', {}), ensure_ascii=False), timestamp))
     await conn.execute(
         'UPDATE tickets SET due_at=? WHERE id=?',
         (calculate_due_at('normal', timestamp), ticket_id),
@@ -888,6 +905,9 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
         await save_dialog(conn, user_id, 'description', draft, timestamp)
         return 'Опишите, что произошло и когда вы это заметили.', keyboard([['Отмена']])
     if state == 'description':
+        images = message_images(payload)
+        if images:
+            draft.setdefault('attachments', []).extend(images)
         if not 10 <= len(text) <= 4000:
             return 'Описание должно содержать от 10 до 4000 символов.', keyboard([['Отмена']])
         draft['description'] = text
