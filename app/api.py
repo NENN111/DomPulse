@@ -1,3 +1,6 @@
+import hashlib
+import hmac
+import json
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -7,10 +10,12 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .db import AsyncDatabase, token_hash
-from .models import CommentCreate, Profile, StatusChange, Ticket, TicketCreate, TicketDetail
+from .models import CommentCreate, GosuslugiResidencyClaim, Profile, StatusChange, Ticket, TicketCreate, TicketDetail
 from .analytics import house_metrics
+from .access import allowed_house_ids, can_access_house
 from .max_webhook import keyboard, parse_update, queue_message, save_dialog, store_update, verify_secret
 from .sla import calculate_due_at
+from .residency import complete_verified_link
 
 # 'resolved' records the operator's report, 'confirmed' records the resident's response.
 OPERATOR_TRANSITIONS = {
@@ -34,6 +39,14 @@ def create_app(db_path: str | None = None):
     if not webhook_secret:
         raise RuntimeError('MAX_WEBHOOK_SECRET is required. Set it explicitly before starting the API.')
     db = AsyncDatabase(configured_db_path)
+    bridge_url = os.getenv('GOSUSLUGI_BRIDGE_URL')
+    bridge_secret = os.getenv('GOSUSLUGI_BRIDGE_SECRET')
+    if bool(bridge_url) != bool(bridge_secret):
+        raise RuntimeError('GOSUSLUGI_BRIDGE_URL and GOSUSLUGI_BRIDGE_SECRET must be set together.')
+    if bridge_url and not bridge_url.startswith('https://'):
+        raise RuntimeError('GOSUSLUGI_BRIDGE_URL must use HTTPS.')
+    if bridge_secret and len(bridge_secret) < 32:
+        raise RuntimeError('GOSUSLUGI_BRIDGE_SECRET must contain at least 32 characters.')
 
     @asynccontextmanager
     async def lifespan(app):
@@ -63,7 +76,7 @@ def create_app(db_path: str | None = None):
     async def accessible(conn, ticket_id, user):
         cursor = await conn.execute('SELECT * FROM tickets WHERE id=?', (ticket_id,))
         row = await cursor.fetchone()
-        if row is None or row['house_id'] != user['house_id']:
+        if row is None or not await can_access_house(conn, user, row['house_id']):
             raise HTTPException(404, 'Обращение не найдено')
         if user['role'] == 'resident' and row['resident_id'] != user['id']:
             raise HTTPException(404, 'Обращение не найдено')
@@ -76,7 +89,17 @@ def create_app(db_path: str | None = None):
             (ticket['id'],),
         )
         events = await cursor.fetchall()
-        return {**ticket, 'events': [dict(e) for e in events]}
+        cursor = await conn.execute(
+            'SELECT id,source,type,external_id,metadata_json,created_at '
+            'FROM ticket_attachments WHERE ticket_id=? ORDER BY id',
+            (ticket['id'],),
+        )
+        attachments = []
+        for row in await cursor.fetchall():
+            item = dict(row)
+            item['metadata'] = json.loads(item.pop('metadata_json'))
+            attachments.append(item)
+        return {**ticket, 'events': [dict(e) for e in events], 'attachments': attachments}
 
     async def event(conn, ticket_id, user, kind, status, text, timestamp):
         await conn.execute(
@@ -95,6 +118,27 @@ def create_app(db_path: str | None = None):
             attachments = keyboard([['Да, всё решено'], ['Проблема осталась']])
             await save_dialog(conn, link['max_user_id'], 'confirm', {'ticket_id': ticket['id']}, timestamp)
         await queue_message(conn, link['max_user_id'], text, attachments, timestamp)
+
+    @app.post('/api/integrations/gosuslugi/residency')
+    async def gosuslugi_residency(
+        request: Request,
+        claim: GosuslugiResidencyClaim,
+        x_dompulse_signature: str | None = Header(default=None),
+    ):
+        if not bridge_secret:
+            raise HTTPException(503, 'Интеграция с Госуслугами не настроена')
+        raw = await request.body()
+        supplied = (x_dompulse_signature or '').removeprefix('sha256=')
+        expected = hmac.new(bridge_secret.encode(), raw, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(supplied, expected):
+            raise HTTPException(401, 'Недействительная подпись интеграции')
+        async with db.connect(write=True) as conn:
+            status, house = await complete_verified_link(conn, claim.model_dump(), now())
+        if status == 'expired':
+            raise HTTPException(410, 'Ссылка подтверждения истекла')
+        if status in {'invalid', 'already_linked', 'subject_linked'}:
+            raise HTTPException(409, 'Подтверждение уже использовано или недействительно')
+        return {'status': status, 'linked': status == 'completed', 'house_id': house['id'] if house else None}
 
     @app.get('/health')
     async def health():
@@ -122,7 +166,7 @@ def create_app(db_path: str | None = None):
         if user['role'] != 'operator':
             raise HTTPException(403, 'Показатели дома доступны сотруднику УК')
         async with db.connect() as conn:
-            result = await house_metrics(conn, user['house_id'])
+            result = await house_metrics(conn, house_ids=await allowed_house_ids(conn, user))
         result.pop('tickets')
         return result
 
@@ -145,11 +189,13 @@ def create_app(db_path: str | None = None):
 
     @app.get('/api/tickets', response_model=list[Ticket])
     async def list_tickets(limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0), user=Depends(actor)):
-        clause, args = 'house_id=?', [user['house_id']]
-        if user['role'] == 'resident':
-            clause += ' AND resident_id=?'
-            args.append(user['id'])
         async with db.connect() as conn:
+            houses = await allowed_house_ids(conn, user)
+            marks = ','.join('?' for _ in houses)
+            clause, args = f'house_id IN ({marks})', list(houses)
+            if user['role'] == 'resident':
+                clause += ' AND resident_id=?'
+                args.append(user['id'])
             cursor = await conn.execute(
                 f'SELECT * FROM tickets WHERE {clause} ORDER BY created_at DESC, id LIMIT ? OFFSET ?',
                 (*args, limit, offset),

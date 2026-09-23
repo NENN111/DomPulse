@@ -1,3 +1,4 @@
+from datetime import date
 from enum import Enum
 from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
@@ -38,6 +39,18 @@ class CommentCreate(Input):
     text: Message
 
 
+class VerifiedRegistration(Input):
+    type: Literal['permanent', 'temporary']
+    house_address: Annotated[str, StringConstraints(strip_whitespace=True, min_length=5, max_length=300)]
+    fias_house_id: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)] | None = None
+    valid_until: date | None = None
+
+
+class GosuslugiResidencyClaim(Input):
+    state: Annotated[str, StringConstraints(strip_whitespace=True, min_length=20, max_length=200)]
+    subject_id: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=300)]
+    registrations: list[VerifiedRegistration] = Field(min_length=1, max_length=5)
+
 class Ticket(BaseModel):
     id: str
     house_id: str
@@ -65,8 +78,18 @@ class Event(BaseModel):
     created_at: str
 
 
+class TicketAttachment(BaseModel):
+    id: int
+    source: str
+    type: str
+    external_id: str | None = None
+    metadata: dict
+    created_at: str
+
+
 class TicketDetail(Ticket):
     events: list[Event]
+    attachments: list[TicketAttachment] = Field(default_factory=list)
 
 
 class Profile(BaseModel):
