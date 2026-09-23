@@ -716,6 +716,95 @@ def test_manual_address_requires_matching_house_code(max_app):
     assert linked['house_id'] == 'manual-house'
 
 
+def test_resident_adds_switches_and_unlinks_houses(max_app):
+    client, db = max_app
+    headers = {'X-Max-Bot-Api-Secret': 'test-webhook-secret'}
+    enroll(client, db, headers, 1901)
+    second_code = 'SECOND-HOME-1901'
+    with db.connect(write=True) as conn:
+        conn.execute('INSERT INTO houses VALUES(?,?)', ('second-house', 'Тестовый дом, 2'))
+        conn.execute(
+            'INSERT INTO enrollment_codes(code_hash,house_id,role,expires_at,max_uses,created_at) '
+            'VALUES(?,?,?,?,?,?)',
+            (token_hash(second_code), 'second-house', 'resident',
+             '2099-01-01T00:00:00+00:00', 1, '2026-01-01T00:00:00+00:00'),
+        )
+
+    for mid, text in [
+        ('homes-open', 'Мои дома'),
+        ('homes-add', 'Добавить дом'),
+        ('homes-code-method', 'Ввести код УК'),
+        ('homes-code', f'/код {second_code}'),
+    ]:
+        response = client.post('/webhooks/max', headers=headers, json=update(mid, text, 1901))
+        assert response.status_code == 200
+
+    with db.connect() as conn:
+        user = conn.execute(
+            'SELECT u.* FROM users u JOIN max_links l ON l.user_id=u.id WHERE l.max_user_id=1901'
+        ).fetchone()
+        memberships = conn.execute(
+            'SELECT house_id,verification_method,revoked_at FROM user_houses '
+            'WHERE user_id=? ORDER BY verified_at,house_id', (user['id'],)
+        ).fetchall()
+    assert user['house_id'] == 'second-house'
+    assert {row['house_id'] for row in memberships} == {'test-house', 'second-house'}
+    assert all(row['revoked_at'] is None for row in memberships)
+
+    client.post('/webhooks/max', headers=headers, json=update('homes-list-switch', 'Мои дома', 1901))
+    with db.connect() as conn:
+        draft = json.loads(conn.execute(
+            'SELECT draft_json FROM max_dialogs WHERE max_user_id=1901'
+        ).fetchone()[0])
+    first_index = draft['houses'].index('test-house') + 1
+    client.post('/webhooks/max', headers=headers,
+                json=update('homes-switch', f'Выбрать дом {first_index}', 1901))
+    with db.connect() as conn:
+        assert conn.execute("SELECT house_id FROM users WHERE id=?", (user['id'],)).fetchone()[0] == 'test-house'
+
+    for mid, text in [
+        ('homes-ticket-1', 'Сообщить о проблеме'), ('homes-ticket-2', 'Вода'),
+        ('homes-ticket-3', 'Подвал'), ('homes-ticket-4', 'Течёт труба в подвале второй час.'),
+        ('homes-ticket-5', 'Отправить'),
+    ]:
+        client.post('/webhooks/max', headers=headers, json=update(mid, text, 1901))
+    with db.connect() as conn:
+        assert conn.execute('SELECT house_id FROM tickets').fetchone()[0] == 'test-house'
+
+    client.post('/webhooks/max', headers=headers, json=update('homes-list-remove', 'Мои дома', 1901))
+    with db.connect() as conn:
+        draft = json.loads(conn.execute(
+            'SELECT draft_json FROM max_dialogs WHERE max_user_id=1901'
+        ).fetchone()[0])
+    second_index = draft['houses'].index('second-house') + 1
+    client.post('/webhooks/max', headers=headers,
+                json=update('homes-remove', f'Отвязать дом {second_index}', 1901))
+    client.post('/webhooks/max', headers=headers,
+                json=update('homes-remove-confirm', 'Подтвердить отвязку', 1901))
+    with db.connect() as conn:
+        membership = conn.execute(
+            'SELECT revoked_at FROM user_houses WHERE user_id=? AND house_id=?',
+            (user['id'], 'second-house'),
+        ).fetchone()
+        assert conn.execute('SELECT COUNT(*) FROM tickets WHERE resident_id=?', (user['id'],)).fetchone()[0] == 1
+    assert membership['revoked_at'] is not None
+
+    client.post('/webhooks/max', headers=headers, json=update('homes-list-last', 'Мои дома', 1901))
+    client.post('/webhooks/max', headers=headers, json=update('homes-remove-last', 'Отвязать дом 1', 1901))
+    client.post('/webhooks/max', headers=headers,
+                json=update('homes-remove-last-confirm', 'Подтвердить отвязку', 1901))
+    with db.connect() as conn:
+        assert conn.execute('SELECT COUNT(*) FROM max_links WHERE max_user_id=1901').fetchone()[0] == 0
+        assert conn.execute('SELECT COUNT(*) FROM tickets WHERE resident_id=?', (user['id'],)).fetchone()[0] == 1
+
+    client.post('/webhooks/max', headers=headers, json=update('homes-start-unlinked', '/start', 1901))
+    with db.connect() as conn:
+        reply = conn.execute(
+            'SELECT text FROM max_outbox WHERE max_user_id=1901 ORDER BY id DESC LIMIT 1'
+        ).fetchone()[0]
+    assert 'не привязан' in reply
+
+
 def test_gosuslugi_bridge_links_active_temporary_registration(tmp_path, monkeypatch):
     secret = 'bridge-secret-with-at-least-32-characters'
     monkeypatch.setenv('MAX_WEBHOOK_SECRET', 'test-webhook-secret')
@@ -771,10 +860,16 @@ def test_gosuslugi_bridge_links_active_temporary_registration(tmp_path, monkeypa
             'SELECT u.house_id FROM max_links l JOIN users u ON u.id=l.user_id WHERE l.max_user_id=1501'
         ).fetchone()
         verification = dict(conn.execute('SELECT * FROM residency_verifications').fetchone())
+        memberships = conn.execute(
+            'SELECT house_id,verification_method,registration_type FROM user_houses '
+            'WHERE user_id=? ORDER BY house_id', ('max-resident-1501',)
+        ).fetchall()
     assert linked['house_id'] == 'temporary-house'
     assert verification['registration_type'] == 'temporary'
     assert verification['subject_hash'] != claim['subject_id']
     assert verification['house_address'] == 'Москва, улица Временная, дом 2'
+    assert {row['house_id'] for row in memberships} == {'permanent-house', 'temporary-house'}
+    assert all(row['verification_method'] == 'gosuslugi' for row in memberships)
 
 
 def test_free_geocoder_requires_user_district_confirmation(max_app, monkeypatch):
@@ -816,14 +911,15 @@ def test_free_geocoder_requires_user_district_confirmation(max_app, monkeypatch)
 
     client.post('/webhooks/max', headers=headers, json=update('district-correct', '\u0417\u0410\u041e', 1880))
     with db.connect() as conn:
-        linked = conn.execute(
-            'SELECT h.id,h.address,hd.district FROM max_links l '
-            'JOIN users u ON u.id=l.user_id JOIN houses h ON h.id=u.house_id '
-            'JOIN house_districts hd ON hd.house_id=h.id WHERE l.max_user_id=1880'
+        dialog = conn.execute(
+            'SELECT state,draft_json FROM max_dialogs WHERE max_user_id=1880'
         ).fetchone()
-    assert linked['id'].startswith('address-')
-    assert linked['address'] == '\u0412\u0435\u0440\u043d\u0430\u0434\u0441\u043a\u043e\u0433\u043e 88'
-    assert linked['district'] == '\u0417\u0410\u041e'
+        assert conn.execute('SELECT COUNT(*) FROM max_links WHERE max_user_id=1880').fetchone()[0] == 0
+    assert dialog['state'] == 'manual_code'
+    assert json.loads(dialog['draft_json']) == {
+        'address': '\u0412\u0435\u0440\u043d\u0430\u0434\u0441\u043a\u043e\u0433\u043e 88',
+        'district': '\u0417\u0410\u041e',
+    }
     assert calls == ['\u0412\u0435\u0440\u043d\u0430\u0434\u0441\u043a\u043e\u0433\u043e 88'] * 3
 
 

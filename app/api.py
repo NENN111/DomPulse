@@ -76,9 +76,12 @@ def create_app(db_path: str | None = None):
     async def accessible(conn, ticket_id, user):
         cursor = await conn.execute('SELECT * FROM tickets WHERE id=?', (ticket_id,))
         row = await cursor.fetchone()
-        if row is None or not await can_access_house(conn, user, row['house_id']):
+        if row is None:
             raise HTTPException(404, 'Обращение не найдено')
-        if user['role'] == 'resident' and row['resident_id'] != user['id']:
+        if user['role'] == 'resident':
+            if row['resident_id'] != user['id']:
+                raise HTTPException(404, 'Обращение не найдено')
+        elif not await can_access_house(conn, user, row['house_id']):
             raise HTTPException(404, 'Обращение не найдено')
         return dict(row)
 
@@ -190,12 +193,12 @@ def create_app(db_path: str | None = None):
     @app.get('/api/tickets', response_model=list[Ticket])
     async def list_tickets(limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0), user=Depends(actor)):
         async with db.connect() as conn:
-            houses = await allowed_house_ids(conn, user)
-            marks = ','.join('?' for _ in houses)
-            clause, args = f'house_id IN ({marks})', list(houses)
             if user['role'] == 'resident':
-                clause += ' AND resident_id=?'
-                args.append(user['id'])
+                clause, args = 'resident_id=?', [user['id']]
+            else:
+                houses = await allowed_house_ids(conn, user)
+                marks = ','.join('?' for _ in houses)
+                clause, args = f'house_id IN ({marks})', list(houses)
             cursor = await conn.execute(
                 f'SELECT * FROM tickets WHERE {clause} ORDER BY created_at DESC, id LIMIT ? OFFSET ?',
                 (*args, limit, offset),

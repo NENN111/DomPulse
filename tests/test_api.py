@@ -131,6 +131,21 @@ def test_data_persists_after_app_restart(tmp_path, monkeypatch):
         assert c.get('/api/tickets/'+ticket['id'],headers=headers('alice')).json()['description'] == ticket['description']
 
 
+def test_resident_keeps_ticket_history_after_switching_house(client):
+    ticket = create(client)
+    db = client.app.state.test_db
+    with db.connect(write=True) as conn:
+        conn.execute(
+            "INSERT INTO user_houses(user_id,house_id,verification_method,verified_at) "
+            "VALUES('alice','h2','code','2026-09-23T10:00:00+00:00')"
+        )
+        conn.execute("UPDATE users SET house_id='h2' WHERE id='alice'")
+    response = client.get('/api/tickets', headers=headers('alice'))
+    assert response.status_code == 200
+    assert [item['id'] for item in response.json()] == [ticket['id']]
+    assert client.get('/api/tickets/'+ticket['id'], headers=headers('alice')).status_code == 200
+
+
 def test_announcements_operator_can_post_and_residents_receive(client):
     db = client.app.state.test_db
     # Привязать MAX-аккаунты жильцов к их пользователям

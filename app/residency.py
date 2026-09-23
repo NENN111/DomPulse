@@ -92,16 +92,16 @@ async def complete_verified_link(conn, claim: dict, timestamp: str):
         )
         return 'expired', None
 
-    selected = None
-    house = None
+    matches = []
+    seen_houses = set()
     for registration in select_registrations(claim['registrations'], timestamp[:10]):
         house = await resolve_house(
             conn, registration['house_address'], registration.get('fias_house_id'),
         )
-        if house:
-            selected = registration
-            break
-    if house is None:
+        if house and house['id'] not in seen_houses:
+            matches.append((registration, house))
+            seen_houses.add(house['id'])
+    if not matches:
         await conn.execute(
             "UPDATE gosuslugi_link_attempts SET status='unmatched',completed_at=? WHERE state_hash=?",
             (timestamp, attempt['state_hash']),
@@ -113,40 +113,80 @@ async def complete_verified_link(conn, claim: dict, timestamp: str):
         )
         return 'unmatched', None
 
-    cursor = await conn.execute('SELECT 1 FROM max_links WHERE max_user_id=?', (attempt['max_user_id'],))
-    if await cursor.fetchone():
-        return 'already_linked', None
     subject_hash = hmac.new(
         os.environ['GOSUSLUGI_BRIDGE_SECRET'].encode(), claim['subject_id'].encode(), hashlib.sha256,
     ).hexdigest()
     cursor = await conn.execute(
-        "SELECT 1 FROM residency_verifications WHERE provider='gosuslugi' AND subject_hash=?",
+        "SELECT user_id FROM residency_verifications WHERE provider='gosuslugi' AND subject_hash=?",
         (subject_hash,),
     )
-    if await cursor.fetchone():
+    subject_owner = await cursor.fetchone()
+    cursor = await conn.execute(
+        'SELECT u.* FROM max_links l JOIN users u ON u.id=l.user_id WHERE l.max_user_id=?',
+        (attempt['max_user_id'],),
+    )
+    linked_user = await cursor.fetchone()
+    has_max_link = linked_user is not None
+    expected_user_id = f"max-resident-{attempt['max_user_id']}"
+    if linked_user is None and subject_owner is not None and subject_owner['user_id'] == expected_user_id:
+        cursor = await conn.execute('SELECT * FROM users WHERE id=?', (expected_user_id,))
+        linked_user = await cursor.fetchone()
+    if linked_user is not None and linked_user['role'] != 'resident':
+        return 'already_linked', None
+    if subject_owner is not None and (
+        linked_user is None or subject_owner['user_id'] != linked_user['id']
+    ):
         return 'subject_linked', None
 
-    internal_id = f"max-resident-{attempt['max_user_id']}"
-    await conn.execute(
-        'INSERT INTO users(id,name,role,house_id,token_hash) VALUES(?,?,?,?,?)',
-        (internal_id, attempt['display_name'], 'resident', house['id'],
-         token_hash(secrets.token_urlsafe(32))),
-    )
-    await conn.execute(
-        'INSERT INTO max_links(max_user_id,user_id,linked_at) VALUES(?,?,?)',
-        (attempt['max_user_id'], internal_id, timestamp),
-    )
+    selected, active_house = matches[0]
+    if linked_user is None:
+        internal_id = expected_user_id
+        await conn.execute(
+            'INSERT INTO users(id,name,role,house_id,token_hash) VALUES(?,?,?,?,?) '
+            'ON CONFLICT(id) DO UPDATE SET name=excluded.name,role=excluded.role,house_id=excluded.house_id',
+            (internal_id, attempt['display_name'], 'resident', active_house['id'],
+             token_hash(secrets.token_urlsafe(32))),
+        )
+    else:
+        internal_id = linked_user['id']
+        cursor = await conn.execute(
+            "SELECT subject_hash FROM residency_verifications WHERE user_id=? AND provider='gosuslugi'",
+            (internal_id,),
+        )
+        current_identity = await cursor.fetchone()
+        if current_identity is not None and current_identity['subject_hash'] != subject_hash:
+            return 'subject_linked', None
+        await conn.execute('UPDATE users SET house_id=? WHERE id=?', (active_house['id'], internal_id))
+    if not has_max_link:
+        await conn.execute(
+            'INSERT INTO max_links(max_user_id,user_id,linked_at) VALUES(?,?,?)',
+            (attempt['max_user_id'], internal_id, timestamp),
+        )
+
     await conn.execute(
         'INSERT INTO residency_verifications('
         'user_id,provider,subject_hash,registration_type,house_address,fias_house_id,verified_at) '
-        'VALUES(?,?,?,?,?,?,?)',
-        (internal_id, 'gosuslugi', subject_hash, selected['type'], house['address'],
+        'VALUES(?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET '
+        'provider=excluded.provider,subject_hash=excluded.subject_hash,'
+        'registration_type=excluded.registration_type,house_address=excluded.house_address,'
+        'fias_house_id=excluded.fias_house_id,verified_at=excluded.verified_at',
+        (internal_id, 'gosuslugi', subject_hash, selected['type'], active_house['address'],
          selected.get('fias_house_id'), timestamp),
     )
-    if selected.get('fias_house_id'):
+    for registration, house in matches:
+        await conn.execute(
+            'INSERT INTO user_houses('
+            'user_id,house_id,verification_method,registration_type,verified_at,revoked_at'
+            ') VALUES(?,?,?,?,?,NULL) ON CONFLICT(user_id,house_id) DO UPDATE SET '
+            'verification_method=excluded.verification_method,'
+            'registration_type=excluded.registration_type,verified_at=excluded.verified_at,revoked_at=NULL',
+            (internal_id, house['id'], 'gosuslugi', registration['type'], timestamp),
+        )
+        if not registration.get('fias_house_id'):
+            continue
         await conn.execute(
             "INSERT OR IGNORE INTO house_identities(house_id,provider,external_id) VALUES(?,'fias',?)",
-            (house['id'], selected['fias_house_id']),
+            (house['id'], registration['fias_house_id']),
         )
     await conn.execute(
         "UPDATE gosuslugi_link_attempts SET status='completed',completed_at=? WHERE state_hash=?",
@@ -154,10 +194,11 @@ async def complete_verified_link(conn, claim: dict, timestamp: str):
     )
     await queue_link_message(
         conn, attempt['max_user_id'],
-        f"Адрес подтверждён через Госуслуги. Профиль привязан к дому: {house['address']}.",
-        [['Сообщить о проблеме'], ['Мои обращения']], timestamp,
+        f"Госуслуги подтвердили домов: {len(matches)}. "
+        f"Активный дом: {active_house['address']}.",
+        [['Мои дома'], ['Сообщить о проблеме'], ['Мои обращения']], timestamp,
     )
-    return 'completed', dict(house)
+    return 'completed', dict(active_house)
 
 
 async def queue_link_message(conn, max_user_id: int, text: str, rows: list[list[str]], timestamp: str):

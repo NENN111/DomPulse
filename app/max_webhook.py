@@ -132,7 +132,8 @@ def menu(role: str = 'resident') -> tuple[str, list[dict[str, Any]]]:
         'ДомПульс связывает жильца с управляющей компанией. Что хотите сделать?',
         keyboard([
             ['Сообщить о проблеме'], ['Мои обращения'],
-            ['Информация об УК', 'Объявления дома'], ['Мой профиль и дом'],
+            ['Информация об УК', 'Объявления дома'],
+            ['Мой профиль и дом', 'Мои дома'],
         ]),
     )
 
@@ -198,7 +199,7 @@ async def record_failed_link_attempt(conn, user_id: int, timestamp: str) -> bool
     return blocked_until is not None
 
 
-async def enroll_with_code(conn, user_id: int, payload: dict[str, Any], code: str, timestamp: str, expected_address: str | None = None):
+async def valid_enrollment(conn, user_id: int, code: str, timestamp: str, expected_address: str | None = None):
     cursor = await conn.execute('SELECT * FROM max_link_attempts WHERE max_user_id=?', (user_id,))
     attempt = await cursor.fetchone()
     if attempt and attempt['blocked_until'] and attempt['blocked_until'] > timestamp:
@@ -225,16 +226,31 @@ async def enroll_with_code(conn, user_id: int, payload: dict[str, Any], code: st
             if blocked:
                 message = 'Слишком много попыток. Повторите через 15 минут.'
             return None, message
+    return enrollment, None
+
+
+async def enroll_with_code(conn, user_id: int, payload: dict[str, Any], code: str, timestamp: str, expected_address: str | None = None):
+    enrollment, error = await valid_enrollment(conn, user_id, code, timestamp, expected_address)
+    if error:
+        return None, error
     source_user = payload.get('user') or ((payload.get('message') or {}).get('sender') or {})
-    display_name = source_user.get('name') if isinstance(source_user, dict) else None
+    name = source_user.get('name') if isinstance(source_user, dict) else None
     internal_id = f'max-{enrollment["role"]}-{user_id}'
     await conn.execute(
-        'INSERT OR IGNORE INTO users(id,name,role,house_id,token_hash) VALUES(?,?,?,?,?)',
-        (internal_id, display_name or f"Пользователь MAX {user_id}", enrollment['role'], enrollment['house_id'],
-         token_hash(secrets.token_urlsafe(32))),
+        'INSERT INTO users(id,name,role,house_id,token_hash) VALUES(?,?,?,?,?) '
+        'ON CONFLICT(id) DO UPDATE SET name=excluded.name,role=excluded.role,house_id=excluded.house_id',
+        (internal_id, name or f"Пользователь MAX {user_id}", enrollment['role'],
+         enrollment['house_id'], token_hash(secrets.token_urlsafe(32))),
     )
     await conn.execute('INSERT INTO max_links(max_user_id,user_id,linked_at) VALUES(?,?,?)',
                        (user_id, internal_id, timestamp))
+    method = 'address_code' if expected_address else 'code'
+    await conn.execute(
+        'INSERT INTO user_houses(user_id,house_id,verification_method,verified_at,revoked_at) '
+        'VALUES(?,?,?,?,NULL) ON CONFLICT(user_id,house_id) DO UPDATE SET '
+        'verification_method=excluded.verification_method,verified_at=excluded.verified_at,revoked_at=NULL',
+        (internal_id, enrollment['house_id'], method, timestamp),
+    )
     if enrollment['role'] == 'operator':
         cursor = await conn.execute('SELECT district FROM house_districts WHERE house_id=?', (enrollment['house_id'],))
         district = await cursor.fetchone()
@@ -243,6 +259,33 @@ async def enroll_with_code(conn, user_id: int, payload: dict[str, Any], code: st
     await conn.execute('UPDATE enrollment_codes SET used_count=used_count+1 WHERE id=?', (enrollment['id'],))
     await conn.execute('DELETE FROM max_link_attempts WHERE max_user_id=?', (user_id,))
     return await linked_user(conn, user_id), None
+
+
+async def add_house_with_code(conn, user, max_user_id: int, code: str, timestamp: str):
+    enrollment, error = await valid_enrollment(conn, max_user_id, code, timestamp)
+    if error:
+        return None, error
+    if user['role'] != 'resident' or enrollment['role'] != 'resident':
+        return None, 'Код роли диспетчера нельзя использовать для добавления квартиры.'
+    cursor = await conn.execute(
+        'SELECT revoked_at FROM user_houses WHERE user_id=? AND house_id=?',
+        (user['id'], enrollment['house_id']),
+    )
+    existing = await cursor.fetchone()
+    if existing is not None and existing['revoked_at'] is None:
+        return None, 'Этот дом уже добавлен в профиль.'
+    await conn.execute(
+        'INSERT INTO user_houses(user_id,house_id,verification_method,verified_at,revoked_at) '
+        'VALUES(?,?,?,?,NULL) ON CONFLICT(user_id,house_id) DO UPDATE SET '
+        'verification_method=excluded.verification_method,registration_type=NULL,'
+        'verified_at=excluded.verified_at,revoked_at=NULL',
+        (user['id'], enrollment['house_id'], 'code', timestamp),
+    )
+    await conn.execute('UPDATE users SET house_id=? WHERE id=?', (enrollment['house_id'], user['id']))
+    await conn.execute('UPDATE enrollment_codes SET used_count=used_count+1 WHERE id=?', (enrollment['id'],))
+    await conn.execute('DELETE FROM max_link_attempts WHERE max_user_id=?', (max_user_id,))
+    cursor = await conn.execute('SELECT address FROM houses WHERE id=?', (enrollment['house_id'],))
+    return await cursor.fetchone(), None
 
 
 async def notify_ticket_resident(conn, ticket, text: str, timestamp: str, confirm=False):
@@ -282,11 +325,15 @@ async def house_and_management_info(conn, user):
 async def profile_and_house(conn, user_id: int):
     cursor = await conn.execute(
         'SELECT u.name,u.role,h.id AS house_id,h.address,hd.district,l.linked_at,'
-        'rv.provider,rv.registration_type,rv.verified_at '
+        'rv.provider,rv.registration_type,rv.verified_at,'
+        'uh.verification_method,uh.registration_type AS house_registration_type,'
+        'uh.verified_at AS house_verified_at '
         'FROM max_links l JOIN users u ON u.id=l.user_id '
         'JOIN houses h ON h.id=u.house_id '
         'LEFT JOIN house_districts hd ON hd.house_id=h.id '
         'LEFT JOIN residency_verifications rv ON rv.user_id=u.id '
+        'LEFT JOIN user_houses uh ON uh.user_id=u.id AND uh.house_id=u.house_id '
+        'AND uh.revoked_at IS NULL '
         'WHERE l.max_user_id=?',
         (user_id,),
     )
@@ -294,16 +341,24 @@ async def profile_and_house(conn, user_id: int):
     if profile is None:
         return 'Профиль не найден. Запустите бота командой /start.', keyboard([['Меню']])
 
-    if profile['provider'] == 'gosuslugi':
+    method = profile['verification_method']
+    if method == 'gosuslugi' or (method is None and profile['provider'] == 'gosuslugi'):
         registration = {
             'permanent': 'постоянная регистрация',
             'temporary': 'временная регистрация',
-        }.get(profile['registration_type'], 'подтверждённая регистрация')
+        }.get(
+            profile['house_registration_type'] or profile['registration_type'],
+            'подтверждённая регистрация',
+        )
         verification = f'Госуслуги, {registration}'
-    elif profile['house_id'].startswith('address-'):
-        verification = 'адрес проверен Геокодером Яндекса'
-    else:
+    elif method == 'address_code':
+        verification = 'адрес проверен, доступ подтверждён кодом УК'
+    elif method == 'code':
         verification = 'одноразовый код управляющей компании'
+    elif profile['house_id'].startswith('address-'):
+        verification = 'ранее проверенный адрес'
+    else:
+        verification = 'ранее созданная привязка'
 
     role = 'житель' if profile['role'] == 'resident' else 'диспетчер УК'
     district = profile['district'] or 'не указан'
@@ -316,13 +371,46 @@ async def profile_and_house(conn, user_id: int):
         f'Способ привязки: {verification}',
         f"Профиль привязан: {format_datetime(profile['linked_at'])}",
     ]
-    if profile['verified_at']:
-        lines.append(f"Адрес подтверждён: {format_datetime(profile['verified_at'])}")
+    verified_at = profile['house_verified_at'] or profile['verified_at']
+    if verified_at:
+        lines.append(f"Адрес подтверждён: {format_datetime(verified_at)}")
 
     buttons = [['Информация об УК']]
     if profile['role'] == 'resident':
-        buttons.append(['Сообщить о проблеме'])
+        buttons.extend([['Мои дома'], ['Сообщить о проблеме']])
     buttons.append(['Меню'])
+    return '\n'.join(lines), keyboard(buttons)
+
+
+async def houses_menu(conn, user, user_id: int, timestamp: str):
+    await conn.execute(
+        'INSERT OR IGNORE INTO user_houses(user_id,house_id,verification_method,verified_at) '
+        "VALUES(?,?,'legacy',?)",
+        (user['id'], user['house_id'], timestamp),
+    )
+    cursor = await conn.execute(
+        'SELECT uh.house_id,h.address,hd.district,uh.verification_method '
+        'FROM user_houses uh JOIN houses h ON h.id=uh.house_id '
+        'LEFT JOIN house_districts hd ON hd.house_id=h.id '
+        'WHERE uh.user_id=? AND uh.revoked_at IS NULL ORDER BY uh.verified_at,uh.house_id',
+        (user['id'],),
+    )
+    houses = [dict(row) for row in await cursor.fetchall()]
+    await save_dialog(
+        conn, user_id, 'houses',
+        {'houses': [house['house_id'] for house in houses]}, timestamp,
+    )
+    lines = ['Мои дома']
+    buttons = []
+    for index, house in enumerate(houses, 1):
+        active = house['house_id'] == user['house_id']
+        marker = '✓ активный' if active else 'доступен'
+        district = house['district'] or 'округ не указан'
+        lines.append(f"{index}. {house['address']} · {district} · {marker}")
+        if not active:
+            buttons.append([f'Выбрать дом {index}'])
+        buttons.append([f'Отвязать дом {index}'])
+    buttons.extend([['Добавить дом'], ['Меню']])
     return '\n'.join(lines), keyboard(buttons)
 
 
@@ -699,31 +787,6 @@ def district_keyboard() -> list[dict[str, Any]]:
     return keyboard(rows)
 
 
-async def link_manual_resident(conn, user_id: int, payload: dict[str, Any], address: str, district: str, timestamp: str):
-    house_id = 'address-' + hashlib.sha256(address.casefold().encode('utf-8')).hexdigest()[:24]
-    await conn.execute('INSERT OR IGNORE INTO houses(id,address) VALUES(?,?)', (house_id, address))
-    await conn.execute('INSERT INTO house_districts(house_id,district) VALUES(?,?) ON CONFLICT(house_id) DO UPDATE SET district=excluded.district', (house_id, district))
-    # Привязать УК: сначала ищем по округу, иначе берём любую первую
-    mc_cursor = await conn.execute(
-        'SELECT DISTINCT hmc.company_id FROM house_management_companies hmc '
-        'JOIN house_districts hd ON hd.house_id = hmc.house_id WHERE hd.district = ?',
-        (district,)
-    )
-    mc_row = await mc_cursor.fetchone()
-    if mc_row is None:
-        mc_cursor = await conn.execute('SELECT id FROM management_companies LIMIT 1')
-        mc_row = await mc_cursor.fetchone()
-    if mc_row:
-        await conn.execute(
-            'INSERT OR IGNORE INTO house_management_companies(house_id, company_id) VALUES(?,?)',
-            (house_id, mc_row[0]),
-        )
-    internal_id = f'max-resident-{user_id}'
-    await conn.execute('INSERT OR IGNORE INTO users(id,name,role,house_id,token_hash) VALUES(?,?,?,?,?)', (internal_id, display_name(payload, user_id), 'resident', house_id, token_hash(secrets.token_urlsafe(32))))
-    await conn.execute('INSERT OR REPLACE INTO max_links(max_user_id,user_id,linked_at) VALUES(?,?,?)', (user_id, internal_id, timestamp))
-    return await linked_user(conn, user_id)
-
-
 async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp: str):
     text = message_text(payload)
     user = await linked_user(conn, user_id)
@@ -784,10 +847,15 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
                         'Бот повторно проверит соответствие адреса выбранному округу.',
                         district_keyboard(),
                     )
-                user = await link_manual_resident(conn, user_id, payload, verified.normalized_address, verified.district, timestamp)
-                await save_dialog(conn, user_id, 'idle', {}, timestamp)
-                reply, attachments = menu(user['role'])
-                return f'Адрес подтверждён: {verified.district}.\n\n' + reply, attachments
+                await save_dialog(
+                    conn, user_id, 'manual_code',
+                    {'address': verified.normalized_address, 'district': verified.district}, timestamp,
+                )
+                return (
+                    f'Адрес найден, округ: {verified.district}. Для подтверждения права на обслуживание '
+                    'введите одноразовый код вашей УК в формате /код XXXX-XXXX-XXXX-XXXX.',
+                    keyboard([['Отмена']]),
+                )
             await save_dialog(conn, user_id, 'manual_code', {'address': text}, timestamp)
             return (
                 'Адрес сохранён. Теперь введите одноразовый код вашей УК в формате '
@@ -810,10 +878,14 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
                     'Выбранный округ не соответствует адресу. Выберите правильный округ.',
                     district_keyboard(),
                 )
-            user = await link_manual_resident(conn, user_id, payload, address, text, timestamp)
-            await save_dialog(conn, user_id, 'idle', {}, timestamp)
-            reply, attachments = menu(user['role'])
-            return f'Адрес и округ {text} подтверждены.\n\n' + reply, attachments
+            await save_dialog(
+                conn, user_id, 'manual_code', {'address': address, 'district': text}, timestamp,
+            )
+            return (
+                f'Адрес и округ {text} проверены. Для подтверждения права на обслуживание '
+                'введите одноразовый код вашей УК в формате /код XXXX-XXXX-XXXX-XXXX.',
+                keyboard([['Отмена']]),
+            )
         if text == 'У меня есть код':
             await save_dialog(conn, user_id, 'idle', {}, timestamp)
             return 'Введите код в формате /код XXXX-XXXX-XXXX-XXXX.', keyboard([['Ввести адрес вручную']])
@@ -851,7 +923,115 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
     if text == 'Отмена':
         await save_dialog(conn, user_id, 'idle', {}, timestamp)
         reply, attachments = menu(user['role'])
-        return 'Создание обращения отменено.\n\n' + reply, attachments
+        cancelled = 'Действие отменено.' if state.startswith(('house', 'add_house')) else 'Создание обращения отменено.'
+        return cancelled + '\n\n' + reply, attachments
+    if user['role'] == 'resident' and text == 'Мои дома':
+        return await houses_menu(conn, user, user_id, timestamp)
+    if user['role'] == 'resident' and text == 'Добавить дом':
+        await save_dialog(conn, user_id, 'add_house_method', {}, timestamp)
+        return (
+            'Как подтвердить ещё один дом?',
+            keyboard([['Ввести код УК'], ['Подтянуть адрес из Госуслуг'], ['Отмена']]),
+        )
+    if user['role'] == 'resident' and state == 'add_house_method':
+        if text == 'Ввести код УК':
+            await save_dialog(conn, user_id, 'add_house_code', {}, timestamp)
+            return 'Введите код в формате /код XXXX-XXXX-XXXX-XXXX.', keyboard([['Отмена']])
+        if text == 'Подтянуть адрес из Госуслуг':
+            url = await begin_verified_link(conn, user_id, user['name'], timestamp)
+            if url:
+                await save_dialog(conn, user_id, 'idle', {}, timestamp)
+                return (
+                    'Откройте защищённую ссылку. Все подтверждённые адреса из числа '
+                    'подключённых домов будут добавлены в профиль:\n' + url,
+                    keyboard([['Мои дома'], ['Меню']]),
+                )
+            return (
+                'Подключение к Госуслугам пока не настроено. Добавьте дом одноразовым кодом УК.',
+                keyboard([['Ввести код УК'], ['Отмена']]),
+            )
+        return 'Выберите способ подтверждения дома.', keyboard([
+            ['Ввести код УК'], ['Подтянуть адрес из Госуслуг'], ['Отмена'],
+        ])
+    if user['role'] == 'resident' and state == 'add_house_code':
+        if not text.lower().startswith('/код '):
+            return 'Введите код в формате /код XXXX-XXXX-XXXX-XXXX.', keyboard([['Отмена']])
+        house, error = await add_house_with_code(conn, user, user_id, text[5:], timestamp)
+        if error:
+            return error, keyboard([['Отмена']])
+        await save_dialog(conn, user_id, 'idle', {}, timestamp)
+        return (
+            f"Дом добавлен и выбран активным: {house['address']}",
+            keyboard([['Мои дома'], ['Сообщить о проблеме'], ['Меню']]),
+        )
+    if user['role'] == 'resident' and state == 'houses':
+        prefixes = {'Выбрать дом ': 'switch', 'Отвязать дом ': 'remove'}
+        action = next((value for prefix, value in prefixes.items() if text.startswith(prefix)), None)
+        if action:
+            prefix = next(prefix for prefix in prefixes if text.startswith(prefix))
+            try:
+                index = int(text.removeprefix(prefix).strip()) - 1
+                house_id = draft['houses'][index]
+            except (ValueError, IndexError, KeyError, TypeError):
+                return 'Дом не найден. Обновите список.', keyboard([['Мои дома'], ['Меню']])
+            cursor = await conn.execute(
+                'SELECT h.address FROM user_houses uh JOIN houses h ON h.id=uh.house_id '
+                'WHERE uh.user_id=? AND uh.house_id=? AND uh.revoked_at IS NULL',
+                (user['id'], house_id),
+            )
+            house = await cursor.fetchone()
+            if house is None:
+                return 'Дом уже недоступен. Обновите список.', keyboard([['Мои дома'], ['Меню']])
+            if action == 'switch':
+                await conn.execute('UPDATE users SET house_id=? WHERE id=?', (house_id, user['id']))
+                await save_dialog(conn, user_id, 'idle', {}, timestamp)
+                return (
+                    f"Активный дом изменён: {house['address']}",
+                    keyboard([['Сообщить о проблеме'], ['Мои дома'], ['Меню']]),
+                )
+            await save_dialog(
+                conn, user_id, 'house_remove_confirm',
+                {'house_id': house_id, 'address': house['address']}, timestamp,
+            )
+            return (
+                f"Отвязать дом «{house['address']}»? История обращений сохранится.",
+                keyboard([['Подтвердить отвязку'], ['Отмена']]),
+            )
+    if user['role'] == 'resident' and state == 'house_remove_confirm':
+        if text != 'Подтвердить отвязку':
+            return 'Подтвердите отвязку или нажмите «Отмена».', keyboard([
+                ['Подтвердить отвязку'], ['Отмена'],
+            ])
+        house_id = draft.get('house_id')
+        await conn.execute(
+            'UPDATE user_houses SET revoked_at=? '
+            'WHERE user_id=? AND house_id=? AND revoked_at IS NULL',
+            (timestamp, user['id'], house_id),
+        )
+        cursor = await conn.execute(
+            'SELECT uh.house_id,h.address FROM user_houses uh JOIN houses h ON h.id=uh.house_id '
+            'WHERE uh.user_id=? AND uh.revoked_at IS NULL ORDER BY uh.verified_at,uh.house_id',
+            (user['id'],),
+        )
+        remaining = await cursor.fetchall()
+        await save_dialog(conn, user_id, 'idle', {}, timestamp)
+        if not remaining:
+            await conn.execute('DELETE FROM max_links WHERE max_user_id=?', (user_id,))
+            return (
+                'Последний дом отвязан. Профиль больше не связан с домом; история обращений сохранена.',
+                unlinked_menu()[1],
+            )
+        if user['house_id'] == house_id:
+            await conn.execute('UPDATE users SET house_id=? WHERE id=?', (remaining[0]['house_id'], user['id']))
+        return (
+            f"Дом отвязан: {draft.get('address', 'адрес не указан')}.",
+            keyboard([['Мои дома'], ['Меню']]),
+        )
+    if user['role'] == 'resident' and text.lower().startswith('/код '):
+        return (
+            'Чтобы добавить ещё один дом, откройте «Мои дома» → «Добавить дом».',
+            keyboard([['Мои дома'], ['Меню']]),
+        )
     if text in {'Информация об УК', 'О доме и УК'}:
         await save_dialog(conn, user_id, 'idle', {}, timestamp)
         return await house_and_management_info(conn, user)

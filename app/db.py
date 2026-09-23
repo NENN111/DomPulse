@@ -29,6 +29,18 @@ CREATE TABLE IF NOT EXISTS users (
  house_id TEXT NOT NULL REFERENCES houses(id),
  token_hash TEXT NOT NULL UNIQUE
 );
+CREATE TABLE IF NOT EXISTS user_houses (
+ user_id TEXT NOT NULL REFERENCES users(id),
+ house_id TEXT NOT NULL REFERENCES houses(id),
+ verification_method TEXT NOT NULL
+   CHECK(verification_method IN ('legacy','code','address_code','gosuslugi')),
+ registration_type TEXT
+   CHECK(registration_type IS NULL OR registration_type IN ('permanent','temporary')),
+ verified_at TEXT NOT NULL,
+ revoked_at TEXT,
+ PRIMARY KEY(user_id, house_id)
+);
+CREATE INDEX IF NOT EXISTS user_houses_house ON user_houses(house_id, user_id);
 CREATE TABLE IF NOT EXISTS tickets (
  id TEXT PRIMARY KEY, house_id TEXT NOT NULL REFERENCES houses(id),
  resident_id TEXT NOT NULL REFERENCES users(id),
@@ -177,6 +189,14 @@ TICKET_MIGRATIONS = {
     'closed_at': 'ALTER TABLE tickets ADD COLUMN closed_at TEXT',
 }
 
+HOUSE_MEMBERSHIP_BACKFILL = """
+INSERT OR IGNORE INTO user_houses(user_id,house_id,verification_method,verified_at)
+SELECT u.id,u.house_id,'legacy',COALESCE(
+ (SELECT l.linked_at FROM max_links l WHERE l.user_id=u.id),
+ '1970-01-01T00:00:00+00:00'
+) FROM users u
+"""
+
 
 def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
@@ -190,6 +210,7 @@ class Database:
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            conn.execute(HOUSE_MEMBERSHIP_BACKFILL)
             columns = {row['name'] for row in conn.execute('PRAGMA table_info(tickets)').fetchall()}
             for column, statement in TICKET_MIGRATIONS.items():
                 if column not in columns:
@@ -224,6 +245,7 @@ class AsyncDatabase:
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         async with self.connect() as conn:
             await conn.executescript(SCHEMA)
+            await conn.execute(HOUSE_MEMBERSHIP_BACKFILL)
             cursor = await conn.execute('PRAGMA table_info(tickets)')
             columns = {row['name'] for row in await cursor.fetchall()}
             for column, statement in TICKET_MIGRATIONS.items():
