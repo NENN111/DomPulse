@@ -9,11 +9,6 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS houses (
  id TEXT PRIMARY KEY, address TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS house_districts (house_id TEXT PRIMARY KEY REFERENCES houses(id), district TEXT NOT NULL);
-CREATE INDEX IF NOT EXISTS idx_house_districts_district ON house_districts(district);
-CREATE TABLE IF NOT EXISTS operator_districts (user_id TEXT NOT NULL REFERENCES users(id), district TEXT NOT NULL, PRIMARY KEY(user_id,district));
-CREATE INDEX IF NOT EXISTS idx_operator_districts_district ON operator_districts(district);
-CREATE UNIQUE INDEX IF NOT EXISTS uq_operator_district ON operator_districts(district);
 CREATE TABLE IF NOT EXISTS users (
  id TEXT PRIMARY KEY, name TEXT NOT NULL,
  role TEXT NOT NULL CHECK(role IN ('resident', 'operator')),
@@ -40,16 +35,6 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS tickets_house ON tickets(house_id, created_at);
 CREATE INDEX IF NOT EXISTS tickets_resident ON tickets(resident_id, created_at);
 CREATE INDEX IF NOT EXISTS events_ticket ON events(ticket_id, id);
-CREATE TABLE IF NOT EXISTS ticket_attachments (
- id INTEGER PRIMARY KEY AUTOINCREMENT,
- ticket_id TEXT NOT NULL REFERENCES tickets(id),
- source TEXT NOT NULL,
- type TEXT NOT NULL,
- external_id TEXT,
- metadata_json TEXT NOT NULL DEFAULT '{}',
- created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS ticket_attachments_ticket ON ticket_attachments(ticket_id, id);
 CREATE TABLE IF NOT EXISTS max_updates (
  fingerprint TEXT PRIMARY KEY,
  update_type TEXT NOT NULL,
@@ -107,33 +92,6 @@ CREATE TABLE IF NOT EXISTS max_link_attempts (
  failed_count INTEGER NOT NULL DEFAULT 0,
  blocked_until TEXT
 );
-CREATE TABLE IF NOT EXISTS house_identities (
- house_id TEXT NOT NULL REFERENCES houses(id),
- provider TEXT NOT NULL,
- external_id TEXT NOT NULL,
- PRIMARY KEY(provider, external_id)
-);
-CREATE TABLE IF NOT EXISTS gosuslugi_link_attempts (
- state_hash TEXT PRIMARY KEY,
- max_user_id INTEGER NOT NULL,
- display_name TEXT NOT NULL,
- status TEXT NOT NULL CHECK(status IN ('pending','completed','unmatched','expired','cancelled')),
- expires_at TEXT NOT NULL,
- created_at TEXT NOT NULL,
- completed_at TEXT
-);
-CREATE INDEX IF NOT EXISTS gosuslugi_link_attempts_user
- ON gosuslugi_link_attempts(max_user_id, created_at);
-CREATE TABLE IF NOT EXISTS residency_verifications (
- user_id TEXT PRIMARY KEY REFERENCES users(id),
- provider TEXT NOT NULL,
- subject_hash TEXT NOT NULL,
- registration_type TEXT NOT NULL CHECK(registration_type IN ('permanent','temporary')),
- house_address TEXT NOT NULL,
- fias_house_id TEXT,
- verified_at TEXT NOT NULL,
- UNIQUE(provider, subject_hash)
-);
 CREATE TABLE IF NOT EXISTS incidents (
  id TEXT PRIMARY KEY,
  house_id TEXT NOT NULL REFERENCES houses(id),
@@ -149,6 +107,15 @@ CREATE TABLE IF NOT EXISTS incident_tickets (
  PRIMARY KEY (incident_id, ticket_id)
 );
 CREATE INDEX IF NOT EXISTS incidents_house ON incidents(house_id, created_at);
+CREATE TABLE IF NOT EXISTS house_management_info (
+ house_id TEXT PRIMARY KEY REFERENCES houses(id),
+ company_name TEXT NOT NULL,
+ office_address TEXT NOT NULL,
+ working_hours TEXT NOT NULL,
+ phone TEXT NOT NULL,
+ emergency_phone TEXT NOT NULL,
+ updated_at TEXT NOT NULL
+);
 """
 
 TICKET_MIGRATIONS = {

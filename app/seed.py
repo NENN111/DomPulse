@@ -3,6 +3,7 @@ import argparse
 import json
 import secrets
 from pathlib import Path
+from datetime import datetime, timezone
 from .db import Database, token_hash
 
 
@@ -25,7 +26,17 @@ def main():
         conn.executemany('INSERT INTO houses VALUES(?,?)',
                          [('house-1', 'Тестовый город, Учебная улица, дом 1'),
                           ('house-2', 'Тестовый город, Учебная улица, дом 2')])
-        conn.executemany('INSERT INTO house_districts VALUES(?,?)', [('house-1', '\u0426\u0410\u041e'), ('house-2', '\u0421\u0410\u041e')])
+        conn.executemany(
+            'INSERT INTO house_management_info VALUES(?,?,?,?,?,?,?)',
+            [
+                ('house-1', 'УК «ДомПульс»', 'Тестовый город, Учебная улица, дом 3',
+                 'Пн–Пт: 09:00–18:00', '+7 (000) 000-00-01', '+7 (000) 000-00-11',
+                 datetime.now(timezone.utc).isoformat()),
+                ('house-2', 'УК «ДомПульс Север»', 'Тестовый город, Северная улица, дом 5',
+                 'Пн–Пт: 09:00–18:00', '+7 (000) 000-00-02', '+7 (000) 000-00-12',
+                 datetime.now(timezone.utc).isoformat()),
+            ],
+        )
         for uid, name, role, house in accounts:
             token = secrets.token_urlsafe(32)
             conn.execute('INSERT INTO users VALUES(?,?,?,?,?)', (uid, name, role, house, token_hash(token)))

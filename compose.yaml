@@ -4,8 +4,6 @@ services:
     environment:
       DOMPULSE_DB: "/data/dompulse.db"
       MAX_WEBHOOK_SECRET: "${MAX_WEBHOOK_SECRET:?MAX_WEBHOOK_SECRET is required}"
-      GOSUSLUGI_BRIDGE_URL: "${GOSUSLUGI_BRIDGE_URL:-}"
-      GOSUSLUGI_BRIDGE_SECRET: "${GOSUSLUGI_BRIDGE_SECRET:-}"
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
@@ -23,18 +21,6 @@ services:
       DOMPULSE_DB: "/data/dompulse.db"
       MAX_API_BASE: "${MAX_API_BASE:?MAX_API_BASE is required}"
       MAX_BOT_TOKEN: "${MAX_BOT_TOKEN:?MAX_BOT_TOKEN is required}"
-    volumes:
-      - dompulse-data:/data
-    restart: unless-stopped
-  max-polling:
-    build: .
-    profiles: ["polling"]
-    command: ["python", "-m", "app.polling"]
-    environment:
-      DOMPULSE_DB: "/data/dompulse.db"
-      MAX_API_BASE: "${MAX_API_BASE:?MAX_API_BASE is required}"
-      MAX_BOT_TOKEN: "${MAX_BOT_TOKEN:?MAX_BOT_TOKEN is required}"
-      GOSUSLUGI_BRIDGE_URL: "${GOSUSLUGI_BRIDGE_URL:-}"
     volumes:
       - dompulse-data:/data
     restart: unless-stopped

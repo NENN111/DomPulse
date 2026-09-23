@@ -1,19 +1,13 @@
 import asyncio
-import hashlib
-import hmac
 import json
-from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from app.api import create_app
-from app import max_webhook
-from app.geocoder import GeocodedAddress
 from app.db import AsyncDatabase, Database, token_hash
 from app.max_api import MaxAPIError, MaxClient
-from app.max_webhook import ticket_review
 from app.outbox import deliver_one, main as worker_main
 from app.sla import scan_overdue
 
@@ -66,38 +60,6 @@ def test_webhook_verifies_secret_deduplicates_and_queues(max_app):
     assert '/код' in message['text']
 
 
-def test_photo_is_kept_when_sent_before_category(max_app):
-    client, db = max_app
-    headers = {'X-Max-Bot-Api-Secret': 'test-webhook-secret'}
-    enroll(client, db, headers, 1450)
-    with db.connect(write=True) as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO max_dialogs(max_user_id,state,draft_json,updated_at) VALUES(?,?,?,?)",
-            (1450, 'category', '{}', '2026-01-01T00:00:00+00:00'),
-        )
-    payload = update('photo-image', '', 1450)
-    payload['message']['body']['attachments'] = [{
-        'type': 'image',
-        'payload': {'photo_id': 42787123429, 'token': 'photo-token', 'url': 'https://images.test/photo'},
-    }]
-    response = client.post('/webhooks/max', headers=headers, json=payload)
-    assert response.status_code == 200
-    with db.connect() as conn:
-        dialog = conn.execute('SELECT state,draft_json FROM max_dialogs WHERE max_user_id=1450').fetchone()
-    assert dialog['state'] == 'category'
-    assert json.loads(dialog['draft_json'])['attachments'][0]['external_id'] == '42787123429'
-
-
-def test_ticket_review_shows_photo_count():
-    text, _ = ticket_review({
-        'category': 'yard',
-        'location': 'Двор',
-        'description': 'Повреждено ограждение.',
-        'attachments': [{'type': 'image', 'external_id': 'photo-1'}],
-    })
-    assert 'Фото: 1 шт.' in text
-
-
 def test_chatbot_creates_ticket_without_mini_app(max_app):
     client, db = max_app
     headers = {'X-Max-Bot-Api-Secret': 'test-webhook-secret'}
@@ -107,7 +69,7 @@ def test_chatbot_creates_ticket_without_mini_app(max_app):
         ('m3', 'Отопление'),
         ('m4', 'Подъезд 2, этаж 5'),
         ('m5', 'Батареи остаются холодными со вчерашнего вечера.'),
-        ('m5-send', 'Отправить'), ('m6', 'Мои обращения'),
+        ('m6', 'Мои обращения'),
     ]
     for mid, text in messages:
         response = client.post('/webhooks/max', headers=headers, json=update(mid, text))
@@ -122,8 +84,8 @@ def test_chatbot_creates_ticket_without_mini_app(max_app):
     assert ticket['location'] == 'Подъезд 2, этаж 5'
     assert ticket['status'] == 'new' and events == 1
     assert link['max_user_id'] == 12345
-    assert 'зарегистрировано' in replies[5]['text']
-    assert f"№{ticket['id'][:8]}" in replies[6]['text']
+    assert 'зарегистрировано' in replies[4]['text']
+    assert f"№{ticket['id'][:8]}" in replies[5]['text']
     buttons = json.loads(replies[0]['attachments_json'])[0]['payload']['buttons']
     assert buttons[0][0] == {'type': 'message', 'text': 'Сообщить о проблеме'}
 
@@ -135,7 +97,6 @@ def test_operator_resolution_is_confirmed_in_max_chat(max_app):
     flow = [
         ('r2', 'Сообщить о проблеме'), ('r3', 'Лифт'),
         ('r4', 'Подъезд 1'), ('r5', 'Лифт не приезжает на этаж уже около часа.'),
-        ('r5-send', 'Отправить'),
     ]
     for mid, text in flow:
         assert client.post('/webhooks/max', headers=webhook_headers, json=update(mid, text)).status_code == 200
@@ -169,7 +130,6 @@ def test_operator_resolution_is_confirmed_in_max_chat(max_app):
             'SELECT * FROM events WHERE ticket_id=? ORDER BY id DESC LIMIT 1', (ticket_id,)
         ).fetchone())
     assert final['status'] == 'confirmed'
-    assert final['closed_at'] is not None
     assert last_event['actor_id'] == 'max-resident-12345'
 
 
@@ -180,18 +140,11 @@ def test_operator_works_queue_and_sets_priority_inside_max(max_app):
     resident_flow = [
         ('resident-2', 'Сообщить о проблеме'), ('resident-3', 'Вода'),
         ('resident-4', 'Подвал, стояк 3'), ('resident-5', 'В подвале течёт труба, вода продолжает прибывать.'),
-        ('resident-5-send', 'Отправить'),
     ]
     for mid, text in resident_flow:
         assert client.post('/webhooks/max', headers=headers, json=update(mid, text)).status_code == 200
-    with db.connect(write=True) as conn:
+    with db.connect() as conn:
         ticket = dict(conn.execute('SELECT * FROM tickets').fetchone())
-        conn.execute(
-            'INSERT INTO ticket_attachments(ticket_id,source,type,external_id,metadata_json,created_at) '
-            'VALUES(?,?,?,?,?,?)',
-            (ticket['id'], 'max', 'image', 'photo-operator-test',
-             json.dumps({'token': 'photo-token', 'url': 'https://images.test/photo'}), ticket['created_at']),
-        )
     prefix = ticket['id'][:8]
 
     enroll(client, db, headers, 777, role='operator')
@@ -213,19 +166,10 @@ def test_operator_works_queue_and_sets_priority_inside_max(max_app):
         resident_notice = dict(conn.execute(
             'SELECT * FROM max_outbox WHERE max_user_id=12345 ORDER BY id DESC LIMIT 1'
         ).fetchone())
-        operator_card = dict(conn.execute(
-            "SELECT * FROM max_outbox WHERE max_user_id=777 AND attachments_json LIKE '%photo-token%' "
-            'ORDER BY id DESC LIMIT 1'
-        ).fetchone())
     assert updated['priority'] == 'emergency'
     assert updated['status'] == 'accepted'
-    assert updated['first_response_at'] is not None
     assert [event['kind'] for event in events] == ['created', 'priority_changed', 'status_changed']
     assert 'принято' in resident_notice['text']
-    card_attachments = json.loads(operator_card['attachments_json'])
-    assert 'Фото: 1' in operator_card['text']
-    assert card_attachments[0] == {'type': 'image', 'payload': {'token': 'photo-token'}}
-    assert card_attachments[-1]['type'] == 'inline_keyboard'
 
 
 def test_operator_sees_grouped_common_problem_signal(max_app):
@@ -233,9 +177,9 @@ def test_operator_sees_grouped_common_problem_signal(max_app):
     headers = {'X-Max-Bot-Api-Secret': 'test-webhook-secret'}
     residents = [
         (12345, [('g2', 'Сообщить о проблеме'), ('g3', 'Отопление'),
-                 ('g4', 'Корпус А, подъезд 1'), ('g5', 'Батареи холодные уже второй день.'), ('g6', 'Отправить')]),
+                 ('g4', 'Корпус А, подъезд 1'), ('g5', 'Батареи холодные уже второй день.')]),
         (12400, [('h2', 'Сообщить о проблеме'), ('h3', 'Отопление'),
-                 ('h4', 'Корпус А, подъезд 1'), ('h5', 'Холодные батареи не работают второй день.'), ('h6', 'Отправить')]),
+                 ('h4', 'Корпус А, подъезд 1'), ('h5', 'Холодные батареи не работают второй день.')]),
     ]
     for user_id, flow in residents:
         enroll(client, db, headers, user_id)
@@ -254,38 +198,161 @@ def test_operator_sees_grouped_common_problem_signal(max_app):
     assert '2 обращения' in response['text']
     assert 'Связанные заявки' in response['text']
 
-    for mid, text in [('operator-group-3', 'Открыть сигнал 1'), ('operator-group-4', 'Срочно')]:
+
+def test_operator_confirms_common_incident_and_notifies_only_affected_residents(max_app):
+    client, db = max_app
+    headers = {'X-Max-Bot-Api-Secret': 'test-webhook-secret'}
+    residents = [
+        (12345, [('incident-a2', 'Сообщить о проблеме'), ('incident-a3', 'Вода'),
+                 ('incident-a4', 'Подвал, стояк 1'), ('incident-a5', 'В подвале течёт труба и прибывает вода.')]),
+        (12400, [('incident-b2', 'Сообщить о проблеме'), ('incident-b3', 'Вода'),
+                 ('incident-b4', 'Подвал, стояк 1'), ('incident-b5', 'Из стояка в подвале течёт вода, становится больше.')]),
+    ]
+    for user_id, flow in residents:
+        enroll(client, db, headers, user_id)
+        for mid, text in flow:
+            assert client.post('/webhooks/max', headers=headers,
+                               json=update(mid, text, user_id=user_id)).status_code == 200
+    enroll(client, db, headers, 777, role='operator')
+    flow = [
+        ('incident-o2', 'Общие проблемы дома'), ('incident-o3', 'Открыть сигнал 1'),
+        ('incident-o4', 'Объявить общий инцидент'), ('incident-o5', 'Авария'),
+    ]
+    for mid, text in flow:
         assert client.post('/webhooks/max', headers=headers,
                            json=update(mid, text, user_id=777)).status_code == 200
+
     with db.connect() as conn:
+        incident = dict(conn.execute('SELECT * FROM incidents').fetchone())
+        tickets = [dict(row) for row in conn.execute('SELECT * FROM tickets ORDER BY resident_id')]
+        linked = conn.execute('SELECT count(*) FROM incident_tickets WHERE incident_id=?', (incident['id'],)).fetchone()[0]
+        notices = [row[0] for row in conn.execute(
+            'SELECT text FROM max_outbox WHERE max_user_id IN (12345,12400) ORDER BY id'
+        )]
+        events = conn.execute("SELECT count(*) FROM events WHERE kind='incident_announced'").fetchone()[0]
+    assert incident['priority'] == 'emergency'
+    assert linked == 2 and all(ticket['priority'] == 'emergency' for ticket in tickets)
+    assert events == 2
+    assert sum('общую проблему' in text for text in notices) == 2
+
+    response = client.post('/webhooks/max', headers=headers,
+                           json=update('incident-o6', 'Общие проблемы дома', user_id=777))
+    assert response.status_code == 200
+    with db.connect() as conn:
+        reply = conn.execute('SELECT text FROM max_outbox WHERE max_user_id=777 ORDER BY id DESC LIMIT 1').fetchone()[0]
         assert conn.execute('SELECT count(*) FROM incidents').fetchone()[0] == 1
-        assert conn.execute('SELECT count(*) FROM incident_tickets').fetchone()[0] == 2
+    assert 'Новых повторяющихся проблем' in reply
 
-    enroll(client, db, headers, 12500)
-    for mid, text in [
-        ('join-1', 'Сообщить о проблеме'), ('join-2', 'Отопление'),
-        ('join-3', 'Корпус А, подъезд 1'), ('join-4', 'Батареи холодные второй день.'),
-    ]:
-        assert client.post('/webhooks/max', headers=headers,
-                           json=update(mid, text, user_id=12500)).status_code == 200
+
+def test_resident_opens_only_own_ticket_card_and_house_management_info(max_app):
+    client, db = max_app
+    headers = {'X-Max-Bot-Api-Secret': 'test-webhook-secret'}
+    enroll(client, db, headers, 12345)
+    with db.connect(write=True) as conn:
+        conn.execute(
+            'INSERT INTO house_management_info VALUES(?,?,?,?,?,?,?)',
+            ('test-house', 'Тестовая УК', 'Город, улица Офисная, 1', 'Пн–Пт: 09:00–18:00',
+             '+7 000 000-00-00', '+7 000 000-00-01', '2026-09-22T10:00:00+00:00'),
+        )
+    flow = [
+        ('card-2', 'Сообщить о проблеме'), ('card-3', 'Лифт'), ('card-4', 'Подъезд 2'),
+        ('card-5', 'Лифт не приезжает на этаж уже около часа.'), ('card-6', 'Мои обращения'),
+    ]
+    for mid, text in flow:
+        assert client.post('/webhooks/max', headers=headers, json=update(mid, text)).status_code == 200
     with db.connect() as conn:
-        prompt = conn.execute(
-            'SELECT text FROM max_outbox WHERE max_user_id=12500 ORDER BY id DESC LIMIT 1'
+        ticket = dict(conn.execute('SELECT * FROM tickets').fetchone())
+        list_reply = dict(conn.execute('SELECT * FROM max_outbox ORDER BY id DESC LIMIT 1').fetchone())
+    buttons = json.loads(list_reply['attachments_json'])[0]['payload']['buttons']
+    assert {'type': 'message', 'text': f"Обращение #{ticket['id'][:8]}"} in [button for row in buttons for button in row]
+
+    response = client.post('/webhooks/max', headers=headers,
+                           json=update('card-7', f"Обращение #{ticket['id'][:8]}"))
+    assert response.status_code == 200
+    response = client.post('/webhooks/max', headers=headers, json=update('card-8', 'О доме и УК'))
+    assert response.status_code == 200
+    with db.connect() as conn:
+        replies = [row[0] for row in conn.execute(
+            'SELECT text FROM max_outbox WHERE max_user_id=12345 ORDER BY id DESC LIMIT 2'
+        )]
+    assert 'Обращение №' in replies[1] and 'История:' in replies[1]
+    assert 'Тестовая УК' in replies[0] and 'Аварийная служба' in replies[0]
+
+    # A resident cannot obtain a card by guessing a ticket prefix from another account.
+    enroll(client, db, headers, 12400)
+    response = client.post('/webhooks/max', headers=headers,
+                           json=update('card-9', f"Обращение #{ticket['id'][:8]}", user_id=12400))
+    assert response.status_code == 200
+    with db.connect() as conn:
+        denied = conn.execute('SELECT text FROM max_outbox WHERE max_user_id=12400 ORDER BY id DESC LIMIT 1').fetchone()[0]
+    assert 'не найдено' in denied
+
+
+def test_resident_adds_detail_and_only_house_operator_is_notified(max_app):
+    client, db = max_app
+    headers = {'X-Max-Bot-Api-Secret': 'test-webhook-secret'}
+    enroll(client, db, headers, 12345)
+    enroll(client, db, headers, 777, role='operator')
+    enroll(client, db, headers, 888, role='operator', house_id='other-house')
+    create_flow = [
+        ('detail-2', 'Сообщить о проблеме'), ('detail-3', 'Отопление'),
+        ('detail-4', 'Подъезд 1'), ('detail-5', 'Батареи остаются холодными со вчерашнего вечера.'),
+        ('detail-6', 'Мои обращения'),
+    ]
+    for mid, text in create_flow:
+        assert client.post('/webhooks/max', headers=headers, json=update(mid, text)).status_code == 200
+    with db.connect() as conn:
+        ticket = dict(conn.execute('SELECT * FROM tickets').fetchone())
+
+    flow = [
+        ('detail-7', f"Обращение #{ticket['id'][:8]}"), ('detail-8', 'Дополнить обращение'),
+        ('detail-9', 'После обеда батареи стали ещё холоднее.'),
+    ]
+    for mid, text in flow:
+        assert client.post('/webhooks/max', headers=headers, json=update(mid, text)).status_code == 200
+    with db.connect() as conn:
+        event = dict(conn.execute(
+            "SELECT * FROM events WHERE ticket_id=? AND kind='resident_comment'", (ticket['id'],)
+        ).fetchone())
+        updated = dict(conn.execute('SELECT * FROM tickets WHERE id=?', (ticket['id'],)).fetchone())
+        operator_notice = conn.execute(
+            'SELECT text FROM max_outbox WHERE max_user_id=777 ORDER BY id DESC LIMIT 1'
         ).fetchone()[0]
-        assert conn.execute('SELECT count(*) FROM tickets').fetchone()[0] == 2
-        assert conn.execute('SELECT count(*) FROM incident_tickets').fetchone()[0] == 2
-    assert 'похожая общая проблема' in prompt
-    assert 'Батареи холодные уже второй день' not in prompt
+        other_operator_notices = conn.execute(
+            'SELECT count(*) FROM max_outbox WHERE max_user_id=888'
+        ).fetchone()[0]
+        resident_reply = conn.execute(
+            'SELECT text FROM max_outbox WHERE max_user_id=12345 ORDER BY id DESC LIMIT 1'
+        ).fetchone()[0]
+    assert event['actor_id'] == 'max-resident-12345'
+    assert event['text'] == 'После обеда батареи стали ещё холоднее.'
+    assert updated['version'] == 2
+    assert 'Новое уточнение' in operator_notice and event['text'] in operator_notice
+    assert other_operator_notices == 1  # only their own enrollment greeting
+    assert 'Дополнение отправлено' in resident_reply and event['text'] in resident_reply
 
-    client.post('/webhooks/max', headers=headers,
-                json=update('join-5', 'Да, присоединить', user_id=12500))
+
+def test_max_user_cannot_change_house_or_role_with_another_code(max_app):
+    client, db = max_app
+    headers = {'X-Max-Bot-Api-Secret': 'test-webhook-secret'}
+    enroll(client, db, headers, 12345, role='resident', house_id='test-house')
+    code = 'OTHER-HOUSE-OPERATOR-CODE'
+    with db.connect(write=True) as conn:
+        conn.execute('INSERT INTO houses VALUES(?,?)', ('other-house', 'Другой дом, 2'))
+        conn.execute(
+            'INSERT INTO enrollment_codes(code_hash,house_id,role,expires_at,max_uses,created_at) VALUES(?,?,?,?,?,?)',
+            (token_hash(code), 'other-house', 'operator', '2099-01-01T00:00:00+00:00', 1,
+             '2026-01-01T00:00:00+00:00'),
+        )
+    assert client.post('/webhooks/max', headers=headers,
+                       json=update('relink-attempt', f'/код {code}', user_id=12345)).status_code == 200
     with db.connect() as conn:
-        assert conn.execute('SELECT count(*) FROM tickets').fetchone()[0] == 2
-    client.post('/webhooks/max', headers=headers,
-                json=update('join-6', 'Отправить', user_id=12500))
-    with db.connect() as conn:
-        assert conn.execute('SELECT count(*) FROM tickets').fetchone()[0] == 3
-        assert conn.execute('SELECT count(*) FROM incident_tickets').fetchone()[0] == 3
+        user = dict(conn.execute(
+            'SELECT u.* FROM max_links l JOIN users u ON u.id=l.user_id WHERE l.max_user_id=12345'
+        ).fetchone())
+        uses = conn.execute('SELECT used_count FROM enrollment_codes WHERE code_hash=?', (token_hash(code),)).fetchone()[0]
+    assert user['house_id'] == 'test-house' and user['role'] == 'resident'
+    assert uses == 0
 
 
 def test_sla_scanner_alerts_operator_once(tmp_path):
@@ -390,9 +457,9 @@ def test_operator_sees_aggregated_house_metrics(max_app):
         ).fetchone()[0]
     assert 'Активные: 2' in text
     assert 'Аварийные: 1' in text
-    assert 'Просроченные: 1' in text
+    assert 'Просроченные: 2' in text
     assert 'Средняя первая реакция: 25 мин.' in text
-    assert 'Ответ в пределах SLA: 50% (2 заявок)' in text
+    assert 'Закрыто в срок: 100% (1 заявок)' in text
 
 
 def test_webhook_rejects_bad_input_and_missing_config(tmp_path, monkeypatch):
@@ -496,278 +563,3 @@ def test_outbox_schedules_retry(tmp_path):
     assert row['status'] == 'failed'
     assert row['attempts'] == 1 and row['error'] == 'temporary failure'
     assert asyncio.run(deliver_one(db, FakeMaxClient())) is False
-
-
-def test_resident_opens_own_ticket_card_but_not_foreign(max_app):
-    client, db = max_app
-    headers = {'X-Max-Bot-Api-Secret': 'test-webhook-secret'}
-    enroll(client, db, headers, 1101)
-    for mid, text in [
-        ('card-1', 'Сообщить о проблеме'), ('card-2', 'Отопление'),
-        ('card-3', 'Подъезд 3'), ('card-4', 'Батареи остаются холодными второй день.'),
-        ('card-5', 'Отправить'),
-    ]:
-        assert client.post('/webhooks/max', headers=headers, json=update(mid, text, 1101)).status_code == 200
-    with db.connect() as conn:
-        ticket = dict(conn.execute('SELECT * FROM tickets').fetchone())
-
-    client.post('/webhooks/max', headers=headers, json=update('card-list', 'Мои обращения', 1101))
-    with db.connect() as conn:
-        listed = dict(conn.execute(
-            'SELECT * FROM max_outbox WHERE max_user_id=1101 ORDER BY id DESC LIMIT 1'
-        ).fetchone())
-    buttons = json.loads(listed['attachments_json'])[0]['payload']['buttons']
-    assert buttons[0][0]['text'] == f"Обращение #{ticket['id'][:8]}"
-
-    client.post('/webhooks/max', headers=headers,
-                json=update('card-open', f"Обращение #{ticket['id'][:8]}", 1101))
-    with db.connect() as conn:
-        card = conn.execute(
-            'SELECT text FROM max_outbox WHERE max_user_id=1101 ORDER BY id DESC LIMIT 1'
-        ).fetchone()[0]
-    assert 'Категория: Отопление' in card
-    assert 'Статус: новое' in card
-    assert 'Описание:' in card and 'История:' in card
-
-    enroll(client, db, headers, 1102)
-    client.post('/webhooks/max', headers=headers,
-                json=update('card-foreign', f"Обращение #{ticket['id'][:8]}", 1102))
-    with db.connect() as conn:
-        denied = conn.execute(
-            'SELECT text FROM max_outbox WHERE max_user_id=1102 ORDER BY id DESC LIMIT 1'
-        ).fetchone()[0]
-    assert denied == 'Обращение не найдено.'
-
-
-def test_operator_replies_without_status_change(max_app):
-    client, db = max_app
-    headers = {'X-Max-Bot-Api-Secret': 'test-webhook-secret'}
-    enroll(client, db, headers, 1201)
-    for mid, text in [
-        ('reply-r1', 'Сообщить о проблеме'), ('reply-r2', 'Вода'),
-        ('reply-r3', 'Подвал'), ('reply-r4', 'В подвале течёт труба около стояка.'),
-        ('reply-r5', 'Отправить'),
-    ]:
-        client.post('/webhooks/max', headers=headers, json=update(mid, text, 1201))
-    with db.connect() as conn:
-        ticket = dict(conn.execute('SELECT * FROM tickets').fetchone())
-    enroll(client, db, headers, 1202, role='operator')
-    for mid, text in [
-        ('reply-o1', f"Заявка #{ticket['id'][:8]}"),
-        ('reply-o2', 'Ответить жителю'),
-        ('reply-o3', 'Специалист получил сообщение и уточняет причину.'),
-    ]:
-        response = client.post('/webhooks/max', headers=headers, json=update(mid, text, 1202))
-        assert response.status_code == 200
-    with db.connect() as conn:
-        updated = dict(conn.execute('SELECT * FROM tickets WHERE id=?', (ticket['id'],)).fetchone())
-        event = dict(conn.execute(
-            "SELECT * FROM events WHERE ticket_id=? AND kind='comment'", (ticket['id'],)
-        ).fetchone())
-        notice = conn.execute(
-            'SELECT text FROM max_outbox WHERE max_user_id=1201 ORDER BY id DESC LIMIT 1'
-        ).fetchone()[0]
-    assert updated['status'] == 'new'
-    assert updated['first_response_at'] is not None
-    assert event['text'] == 'Специалист получил сообщение и уточняет причину.'
-    assert 'Ответ УК' in notice
-
-def test_sla_alert_is_not_created_after_first_response(tmp_path):
-    path = str(tmp_path / 'sla-answered.db')
-    db = Database(path)
-    db.initialize()
-    with db.connect(write=True) as conn:
-        conn.execute("INSERT INTO houses VALUES('h1','Дом 1')")
-        conn.executemany('INSERT INTO users VALUES(?,?,?,?,?)', [
-            ('resident', 'Житель', 'resident', 'h1', token_hash('resident')),
-            ('operator', 'Диспетчер', 'operator', 'h1', token_hash('operator')),
-        ])
-        conn.execute('INSERT INTO max_links VALUES(?,?,?)', (901, 'operator', '2020-01-01T00:00:00+00:00'))
-        conn.execute(
-            'INSERT INTO tickets(id,house_id,resident_id,category,location,description,status,priority,version,'
-            'created_at,updated_at,due_at,first_response_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
-            ('answered', 'h1', 'resident', 'water', 'Подвал', 'Вода течёт около стояка', 'accepted',
-             'urgent', 2, '2020-01-01T00:00:00+00:00', '2020-01-01T00:02:00+00:00',
-             '2020-01-01T00:01:00+00:00', '2020-01-01T00:02:00+00:00'),
-        )
-    assert asyncio.run(scan_overdue(AsyncDatabase(path))) == 0
-    with db.connect() as conn:
-        assert conn.execute('SELECT count(*) FROM sla_alerts').fetchone()[0] == 0
-        assert conn.execute('SELECT count(*) FROM max_outbox').fetchone()[0] == 0
-
-
-def test_reopened_via_max_clears_closed_at(max_app):
-    client, db = max_app
-    headers = {'X-Max-Bot-Api-Secret': 'test-webhook-secret'}
-    enroll(client, db, headers, 1301)
-    with db.connect(write=True) as conn:
-        resident_id = conn.execute(
-            'SELECT user_id FROM max_links WHERE max_user_id=1301'
-        ).fetchone()[0]
-        conn.execute(
-            'INSERT INTO tickets(id,house_id,resident_id,category,location,description,status,priority,version,'
-            'created_at,updated_at,due_at,first_response_at,closed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-            ('reopen-12345678', 'test-house', resident_id, 'water', 'Подвал',
-             'Вода снова появилась около стояка', 'resolved', 'normal', 3,
-             '2026-01-01T00:00:00+00:00', '2026-01-01T01:00:00+00:00',
-             '2026-01-02T00:00:00+00:00', '2026-01-01T00:10:00+00:00', '2026-01-01T01:00:00+00:00'),
-        )
-        conn.execute(
-            "INSERT OR REPLACE INTO max_dialogs(max_user_id,state,draft_json,updated_at) VALUES(1301,'confirm',?,?)",
-            (json.dumps({'ticket_id': 'reopen-12345678'}), '2026-01-01T01:00:00+00:00'),
-        )
-    response = client.post('/webhooks/max', headers=headers,
-                           json=update('reopen-max', 'Проблема осталась', 1301))
-    assert response.status_code == 200
-    with db.connect() as conn:
-        ticket = dict(conn.execute("SELECT * FROM tickets WHERE id='reopen-12345678'").fetchone())
-    assert ticket['status'] == 'reopened'
-    assert ticket['closed_at'] is None
-
-
-def test_manual_address_requires_matching_house_code(max_app):
-    client, db = max_app
-    headers = {'X-Max-Bot-Api-Secret': 'test-webhook-secret'}
-    with db.connect(write=True) as conn:
-        conn.execute('INSERT INTO houses VALUES(?,?)', ('manual-house', 'Москва, улица Лесная, дом 10'))
-        conn.execute(
-            'INSERT INTO enrollment_codes(code_hash,house_id,role,expires_at,max_uses,created_at) '
-            'VALUES(?,?,?,?,?,?)',
-            (token_hash('MANUAL-OK-CODE-1'), 'manual-house', 'resident',
-             '2099-01-01T00:00:00+00:00', 1, '2026-01-01T00:00:00+00:00'),
-        )
-    for mid, text in [
-        ('manual-start', '/start'),
-        ('manual-select', 'Ввести адрес вручную'),
-        ('manual-wrong-address', 'Москва, улица Другая, дом 99'),
-        ('manual-wrong-code', '/код MANUAL-OK-CODE-1'),
-    ]:
-        response = client.post('/webhooks/max', headers=headers, json=update(mid, text, 1401))
-        assert response.status_code == 200
-    with db.connect() as conn:
-        assert conn.execute('SELECT 1 FROM max_links WHERE max_user_id=1401').fetchone() is None
-        assert conn.execute('SELECT used_count FROM enrollment_codes').fetchone()[0] == 0
-
-    for mid, text in [
-        ('manual-select-correct', 'Ввести адрес вручную'),
-        ('manual-address', 'Москва, улица Лесная, дом 10'),
-        ('manual-code', '/код MANUAL-OK-CODE-1'),
-    ]:
-        response = client.post('/webhooks/max', headers=headers, json=update(mid, text, 1401))
-        assert response.status_code == 200
-    with db.connect() as conn:
-        linked = conn.execute(
-            'SELECT u.house_id FROM max_links l JOIN users u ON u.id=l.user_id WHERE l.max_user_id=1401'
-        ).fetchone()
-    assert linked['house_id'] == 'manual-house'
-
-
-def test_gosuslugi_bridge_links_active_temporary_registration(tmp_path, monkeypatch):
-    secret = 'bridge-secret-with-at-least-32-characters'
-    monkeypatch.setenv('MAX_WEBHOOK_SECRET', 'test-webhook-secret')
-    monkeypatch.setenv('GOSUSLUGI_BRIDGE_URL', 'https://identity.example.test/connect')
-    monkeypatch.setenv('GOSUSLUGI_BRIDGE_SECRET', secret)
-    path = str(tmp_path / 'gosuslugi.db')
-    db = Database(path)
-    db.initialize()
-    with db.connect(write=True) as conn:
-        conn.executemany('INSERT INTO houses VALUES(?,?)', [
-            ('permanent-house', 'Москва, улица Постоянная, дом 1'),
-            ('temporary-house', 'Москва, улица Временная, дом 2'),
-        ])
-    headers = {'X-Max-Bot-Api-Secret': 'test-webhook-secret'}
-    with TestClient(create_app(path)) as client:
-        client.post('/webhooks/max', headers=headers, json=update('gos-start', '/start', 1501))
-        client.post('/webhooks/max', headers=headers,
-                    json=update('gos-select', 'Подтянуть адрес из Госуслуг', 1501))
-        with db.connect() as conn:
-            message = conn.execute(
-                'SELECT text FROM max_outbox WHERE max_user_id=1501 ORDER BY id DESC LIMIT 1'
-            ).fetchone()[0]
-        state = parse_qs(urlparse(message.splitlines()[-1]).query)['state'][0]
-        claim = {
-            'state': state,
-            'subject_id': 'esia-subject-1501',
-            'registrations': [
-                {'type': 'permanent', 'house_address': 'Москва, улица Постоянная, дом 1'},
-                {'type': 'temporary', 'house_address': 'Москва, улица Временная, дом 2',
-                 'valid_until': '2099-12-31'},
-            ],
-        }
-        raw = json.dumps(claim, ensure_ascii=False, separators=(',', ':')).encode()
-        signature = hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
-        invalid = client.post(
-            '/api/integrations/gosuslugi/residency', content=raw,
-            headers={'Content-Type': 'application/json', 'X-DomPulse-Signature': 'bad'},
-        )
-        response = client.post(
-            '/api/integrations/gosuslugi/residency', content=raw,
-            headers={'Content-Type': 'application/json', 'X-DomPulse-Signature': 'sha256=' + signature},
-        )
-        replay = client.post(
-            '/api/integrations/gosuslugi/residency', content=raw,
-            headers={'Content-Type': 'application/json', 'X-DomPulse-Signature': signature},
-        )
-    assert invalid.status_code == 401
-    assert response.status_code == 200
-    assert response.json() == {'status': 'completed', 'linked': True, 'house_id': 'temporary-house'}
-    assert replay.status_code == 409
-    with db.connect() as conn:
-        linked = conn.execute(
-            'SELECT u.house_id FROM max_links l JOIN users u ON u.id=l.user_id WHERE l.max_user_id=1501'
-        ).fetchone()
-        verification = dict(conn.execute('SELECT * FROM residency_verifications').fetchone())
-    assert linked['house_id'] == 'temporary-house'
-    assert verification['registration_type'] == 'temporary'
-    assert verification['subject_hash'] != claim['subject_id']
-    assert verification['house_address'] == 'Москва, улица Временная, дом 2'
-
-
-def test_free_geocoder_requires_user_district_confirmation(max_app, monkeypatch):
-    client, db = max_app
-    headers = {'X-Max-Bot-Api-Secret': 'test-webhook-secret'}
-    calls = []
-
-    async def fake_geocode(address):
-        calls.append(address)
-        return GeocodedAddress(
-            '\u0420\u043e\u0441\u0441\u0438\u044f, \u041c\u043e\u0441\u043a\u0432\u0430, \u043f\u0440\u043e\u0441\u043f\u0435\u043a\u0442 \u0412\u0435\u0440\u043d\u0430\u0434\u0441\u043a\u043e\u0433\u043e, 88',
-            '\u0417\u0410\u041e',
-            55.676,
-            37.503,
-        )
-
-    monkeypatch.setenv('YANDEX_MAPS_API_KEY', 'free-test-key')
-    monkeypatch.setenv('YANDEX_MAPS_ALLOW_STORAGE', 'false')
-    monkeypatch.setattr(max_webhook, 'geocode_address', fake_geocode)
-
-    messages = [
-        ('district-start', '/start'),
-        ('district-manual', '\u0412\u0432\u0435\u0441\u0442\u0438 \u0430\u0434\u0440\u0435\u0441 \u0432\u0440\u0443\u0447\u043d\u0443\u044e'),
-        ('district-address', '\u0412\u0435\u0440\u043d\u0430\u0434\u0441\u043a\u043e\u0433\u043e 88'),
-    ]
-    for mid, text_value in messages:
-        response = client.post('/webhooks/max', headers=headers, json=update(mid, text_value, 1880))
-        assert response.status_code == 200
-
-    with db.connect() as conn:
-        dialog = conn.execute('SELECT state,draft_json FROM max_dialogs WHERE max_user_id=1880').fetchone()
-        assert conn.execute('SELECT COUNT(*) FROM max_links WHERE max_user_id=1880').fetchone()[0] == 0
-    assert dialog['state'] == 'manual_district'
-    assert json.loads(dialog['draft_json']) == {'address': '\u0412\u0435\u0440\u043d\u0430\u0434\u0441\u043a\u043e\u0433\u043e 88'}
-
-    client.post('/webhooks/max', headers=headers, json=update('district-wrong', '\u0426\u0410\u041e', 1880))
-    with db.connect() as conn:
-        assert conn.execute('SELECT COUNT(*) FROM max_links WHERE max_user_id=1880').fetchone()[0] == 0
-
-    client.post('/webhooks/max', headers=headers, json=update('district-correct', '\u0417\u0410\u041e', 1880))
-    with db.connect() as conn:
-        linked = conn.execute(
-            'SELECT h.id,h.address,hd.district FROM max_links l '
-            'JOIN users u ON u.id=l.user_id JOIN houses h ON h.id=u.house_id '
-            'JOIN house_districts hd ON hd.house_id=h.id WHERE l.max_user_id=1880'
-        ).fetchone()
-    assert linked['id'].startswith('address-')
-    assert linked['address'] == '\u0412\u0435\u0440\u043d\u0430\u0434\u0441\u043a\u043e\u0433\u043e 88'
-    assert linked['district'] == '\u0417\u0410\u041e'
-    assert calls == ['\u0412\u0435\u0440\u043d\u0430\u0434\u0441\u043a\u043e\u0433\u043e 88'] * 3

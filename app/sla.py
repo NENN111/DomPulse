@@ -10,9 +10,8 @@ def calculate_due_at(priority: str, created_at: str) -> str:
     return (datetime.fromisoformat(created_at) + timedelta(minutes=minutes)).isoformat()
 
 
-def is_overdue(due_at: str | None, first_response_at: str | None) -> bool:
-    """Проверить, нарушен ли срок первого ответа по заявке."""
-    if not due_at or first_response_at:
+def is_overdue(due_at: str | None, status: str) -> bool:
+    if not due_at or status in {'confirmed'}:
         return False
     return datetime.fromisoformat(due_at) < datetime.now(timezone.utc)
 
@@ -25,7 +24,7 @@ async def scan_overdue(db: AsyncDatabase) -> int:
     async with db.connect(write=True) as conn:
         cursor = await conn.execute(
             "SELECT t.* FROM tickets t WHERE t.due_at IS NOT NULL AND t.due_at<? "
-            "AND t.first_response_at IS NULL AND NOT EXISTS "
+            "AND t.status!='confirmed' AND NOT EXISTS "
             '(SELECT 1 FROM sla_alerts a WHERE a.ticket_id=t.id)',
             (now,),
         )

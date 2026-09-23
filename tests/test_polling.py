@@ -127,7 +127,7 @@ def test_polling_enrollment_ticket_delivery_and_resume(tmp_path):
         conn.execute("INSERT INTO houses VALUES('house-1','Тестовый дом')")
     code, _ = create_code(sync, 'house-1', 'resident', 24, 1)
     updates = [update(str(i), text) for i, text in enumerate([
-        f'/код {code}', 'Сообщить о проблеме', 'Отопление', 'Подъезд 1', 'Холодные батареи со вчерашнего дня', 'Отправить',
+        f'/код {code}', 'Сообщить о проблеме', 'Отопление', 'Подъезд 1', 'Холодные батареи со вчерашнего дня',
     ])]
     markers, sent = [], []
 
@@ -147,7 +147,7 @@ def test_polling_enrollment_ticket_delivery_and_resume(tmp_path):
                 pass
     asyncio.run(scenario())
     assert markers == [None, '99']
-    assert len(sent) == 6
+    assert len(sent) == 5
     with sync.connect() as conn:
         assert conn.execute('SELECT count(*) FROM tickets').fetchone()[0] == 1
         assert conn.execute('SELECT marker FROM max_polling_state').fetchone()[0] == 99

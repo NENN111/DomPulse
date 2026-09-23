@@ -1,4 +1,3 @@
-import json
 import pytest
 from fastapi.testclient import TestClient
 from app.api import create_app
@@ -17,7 +16,6 @@ def client(tmp_path, monkeypatch):
                                   ('staff','operator','h1'), ('outsider','operator','h2')]:
             conn.execute('INSERT INTO users VALUES(?,?,?,?,?)', (uid,uid,role,house,token_hash(uid+'-test-only')))
     with TestClient(create_app(path)) as c:
-        c.app.state.test_db = db
         yield c
 
 
@@ -84,23 +82,6 @@ def test_staff_reply_is_visible_to_resident(client):
     fetched = client.get(path,headers=headers('alice')).json()
     assert fetched['events'][-1]['actor_role'] == 'operator'
     assert fetched['events'][-1]['text'] == 'Уточните время появления проблемы.'
-
-
-def test_ticket_detail_returns_attachment_metadata(client):
-    ticket = create(client)
-    with client.app.state.test_db.connect(write=True) as conn:
-        conn.execute(
-            'INSERT INTO ticket_attachments(ticket_id,source,type,external_id,metadata_json,created_at) '
-            'VALUES(?,?,?,?,?,?)',
-            (ticket['id'], 'max', 'image', 'image-42', json.dumps({'width': 640, 'height': 480}),
-             '2026-01-01T00:00:00+00:00'),
-        )
-    response = client.get('/api/tickets/'+ticket['id'], headers=headers('alice'))
-    assert response.status_code == 200
-    assert response.json()['attachments'] == [{
-        'id': 1, 'source': 'max', 'type': 'image', 'external_id': 'image-42',
-        'metadata': {'width': 640, 'height': 480}, 'created_at': '2026-01-01T00:00:00+00:00',
-    }]
 
 
 def test_auth_and_validation(client):

@@ -30,7 +30,7 @@ def load_env(path: Path):
     """
     if not path.exists():
         return
-    allowed = {'DOMPULSE_DB', 'MAX_BOT_TOKEN', 'MAX_API_BASE', 'YANDEX_MAPS_API_KEY', 'YANDEX_GEOCODER_URL'}
+    allowed = {'DOMPULSE_DB', 'MAX_BOT_TOKEN', 'MAX_API_BASE'}
     for number, line in enumerate(path.read_text(encoding='utf-8-sig').splitlines(), 1):
         line = line.strip()
         if not line or line.startswith('#'):
