@@ -28,7 +28,8 @@ def format_datetime(value: str | None) -> str:
     if not value:
         return 'не указана'
     parsed = datetime.fromisoformat(value)
-    return parsed.astimezone(timezone.utc).strftime('%d.%m.%Y %H:%M UTC')
+    msk = timezone(timedelta(hours=3), name='MSK')
+    return parsed.astimezone(msk).strftime('%d.%m.%Y %H:%M МСК')
 
 
 def verify_secret(expected: str | None, supplied: str | None):
@@ -998,7 +999,7 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
         )
         rows = await cursor.fetchall()
         if not rows:
-            return 'У вас пока нет обращений.', keyboard([['Сообщить о проблеме']])
+            return 'У вас пока нет обращений.', keyboard([['Назад']])
         lines = ['Последние обращения:']
         for ticket in rows:
             lines.append(
@@ -1007,6 +1008,22 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
         buttons = [[f"Обращение #{ticket['id'][:8]}"] for ticket in rows]
         buttons.extend([['Сообщить о проблеме'], ['Меню']])
         return '\n'.join(lines), keyboard(buttons)
+    if text == 'Объявления дома':
+        cursor = await conn.execute(
+            'SELECT title, body, created_at FROM announcements WHERE house_id=? ORDER BY created_at DESC LIMIT 5',
+            (user['house_id'],)
+        )
+        rows = await cursor.fetchall()
+        if not rows:
+            reply = 'Объявлений пока нет.'
+        else:
+            lines = ['Последние объявления:']
+            for row in rows:
+                lines.append(f"• {row['title']} ({format_datetime(row['created_at'])})\n{row['body']}")
+            reply = '\n\n'.join(lines)
+        
+        await save_dialog(conn, user_id, 'idle', {}, timestamp)
+        return reply, keyboard([['Назад']])
     if text == 'Информация об УК':
         cursor = await conn.execute(
             'SELECT mc.name, mc.info_text FROM management_companies mc '
@@ -1021,7 +1038,7 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
             reply = "Информация об управляющей компании для вашего дома не найдена."
         
         await save_dialog(conn, user_id, 'idle', {}, timestamp)
-        return reply, keyboard([['Сообщить о проблеме'], ['Мои обращения'], ['Информация об УК']])
+        return reply, keyboard([['Назад']])
     if text == 'Сообщить о проблеме':
         await save_dialog(conn, user_id, 'category', {}, timestamp)
         labels = list(CATEGORIES)
