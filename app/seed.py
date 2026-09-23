@@ -25,6 +25,13 @@ def main():
         conn.executemany('INSERT INTO houses VALUES(?,?)',
                          [('house-1', 'Тестовый город, Учебная улица, дом 1'),
                           ('house-2', 'Тестовый город, Учебная улица, дом 2')])
+        conn.executemany('INSERT INTO management_companies VALUES(?,?,?)', [
+            ('mc-1', 'ООО "УК Тестовая"', 'Адрес: ул. Примерная, 10\nВремя работы: Пн-Пт 09:00-18:00\nТелефон: +7 (495) 123-45-67')
+        ])
+        conn.executemany('INSERT INTO house_management_companies VALUES(?,?)', [
+            ('house-1', 'mc-1'),
+            ('house-2', 'mc-1')
+        ])
         conn.executemany('INSERT INTO house_districts VALUES(?,?)', [('house-1', '\u0426\u0410\u041e'), ('house-2', '\u0421\u0410\u041e')])
         for uid, name, role, house in accounts:
             token = secrets.token_urlsafe(32)

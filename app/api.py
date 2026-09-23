@@ -10,7 +10,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .db import AsyncDatabase, token_hash
-from .models import CommentCreate, GosuslugiResidencyClaim, Profile, StatusChange, Ticket, TicketCreate, TicketDetail
+from .models import AnnouncementCreate, Announcement, CommentCreate, GosuslugiResidencyClaim, Profile, StatusChange, Ticket, TicketCreate, TicketDetail
 from .analytics import house_metrics
 from .access import allowed_house_ids, can_access_house
 from .max_webhook import keyboard, parse_update, queue_message, save_dialog, store_update, verify_secret
@@ -251,5 +251,53 @@ def create_app(db_path: str | None = None):
                     timestamp, confirm=body.status.value == 'resolved',
                 )
             return await detail(conn, await accessible(conn, ticket_id, user))
+
+    @app.post('/api/houses/{house_id}/announcements', response_model=Announcement, status_code=201)
+    async def create_announcement(house_id: str, body: AnnouncementCreate, user=Depends(actor)):
+        """Оператор УК публикует объявление: бот мгновенно рассылает его всем жильцам дома в MAX."""
+        if user['role'] != 'operator':
+            raise HTTPException(403, 'Объявления создаёт сотрудник УК')
+        async with db.connect() as conn:
+            if not await can_access_house(conn, user, house_id):
+                raise HTTPException(404, 'Дом не найден')
+        announcement_id = str(uuid4())
+        timestamp = now()
+        text = f'\U0001f4e3 Объявление от УК\n\n{body.title}\n\n{body.body}'
+        async with db.connect(write=True) as conn:
+            await conn.execute(
+                'INSERT INTO announcements(id,house_id,title,body,created_by,created_at) VALUES(?,?,?,?,?,?)',
+                (announcement_id, house_id, body.title, body.body, user['id'], timestamp),
+            )
+            # Найти всех жильцов дома с привязанным MAX-аккаунтом
+            cursor = await conn.execute(
+                "SELECT l.max_user_id FROM max_links l JOIN users u ON u.id=l.user_id WHERE u.house_id=? AND u.role='resident'",
+                (house_id,)
+            )
+            residents = await cursor.fetchall()
+            for row in residents:
+                await queue_message(
+                    conn, row['max_user_id'], text,
+                    keyboard([['Объявления дома'], ['Мои обращения']]),
+                    timestamp,
+                )
+            await conn.execute('UPDATE announcements SET sent_at=? WHERE id=?', (timestamp, announcement_id))
+            cursor = await conn.execute('SELECT * FROM announcements WHERE id=?', (announcement_id,))
+            return dict(await cursor.fetchone())
+
+    @app.get('/api/houses/{house_id}/announcements', response_model=list[Announcement])
+    async def list_announcements(
+        house_id: str,
+        limit: int = Query(20, ge=1, le=100),
+        user=Depends(actor),
+    ):
+        """Последние объявления дома — доступно и жильцам, и операторам."""
+        async with db.connect() as conn:
+            if not await can_access_house(conn, user, house_id):
+                raise HTTPException(404, 'Дом не найден')
+            cursor = await conn.execute(
+                'SELECT * FROM announcements WHERE house_id=? ORDER BY created_at DESC LIMIT ?',
+                (house_id, limit),
+            )
+            return [dict(row) for row in await cursor.fetchall()]
 
     return app

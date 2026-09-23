@@ -771,3 +771,27 @@ def test_free_geocoder_requires_user_district_confirmation(max_app, monkeypatch)
     assert linked['address'] == '\u0412\u0435\u0440\u043d\u0430\u0434\u0441\u043a\u043e\u0433\u043e 88'
     assert linked['district'] == '\u0417\u0410\u041e'
     assert calls == ['\u0412\u0435\u0440\u043d\u0430\u0434\u0441\u043a\u043e\u0433\u043e 88'] * 3
+
+
+def test_resident_can_get_management_company_info(max_app):
+    client, db = max_app
+    headers = {'X-Max-Bot-Api-Secret': 'test-webhook-secret'}
+    enroll(client, db, headers, 12345, house_id='house-1')
+    with db.connect(write=True) as conn:
+        conn.execute('INSERT OR IGNORE INTO management_companies VALUES(?,?,?)', (
+            'mc-1', 'ООО "УК Тестовая"', 'Адрес: ул. Примерная, 10\nВремя работы: Пн-Пт 09:00-18:00\nТелефон: +7 (495) 123-45-67'
+        ))
+        conn.execute('INSERT OR IGNORE INTO house_management_companies VALUES(?,?)', ('house-1', 'mc-1'))
+
+    response = client.post('/webhooks/max', headers=headers, json=update('mc-info-1', 'Информация об УК', 12345))
+    assert response.status_code == 200
+
+    with db.connect() as conn:
+        notice = dict(conn.execute('SELECT * FROM max_outbox ORDER BY id DESC LIMIT 1').fetchone())
+    
+    assert 'ООО "УК Тестовая"' in notice['text']
+    assert 'Адрес: ул. Примерная, 10' in notice['text']
+    
+    buttons = json.loads(notice['attachments_json'])[0]['payload']['buttons']
+    assert buttons[0][0]['text'] == 'Сообщить о проблеме'
+    assert buttons[2][0]['text'] == 'Информация об УК'

@@ -129,3 +129,45 @@ def test_data_persists_after_app_restart(tmp_path, monkeypatch):
         ticket=create(c)
     with TestClient(create_app(path)) as c:
         assert c.get('/api/tickets/'+ticket['id'],headers=headers('alice')).json()['description'] == ticket['description']
+
+
+def test_announcements_operator_can_post_and_residents_receive(client):
+    db = client.app.state.test_db
+    # Привязать MAX-аккаунты жильцов к их пользователям
+    with db.connect(write=True) as conn:
+        conn.execute("INSERT INTO max_links(max_user_id, user_id, linked_at) VALUES(?,?,?)",
+                     (111, 'alice', '2026-01-01T00:00:00+00:00'))
+        conn.execute("INSERT INTO max_links(max_user_id, user_id, linked_at) VALUES(?,?,?)",
+                     (222, 'bob', '2026-01-01T00:00:00+00:00'))
+
+    response = client.post('/api/houses/h1/announcements', headers=headers('staff'), json={
+        'title': 'Плановое отключение воды',
+        'body': '25 сентября с 10:00 до 18:00 будет отключена холодная вода. Наберите запас заранее.',
+    })
+    assert response.status_code == 201
+    data = response.json()
+    assert data['title'] == 'Плановое отключение воды'
+    assert data['sent_at'] is not None
+
+    # Оба жильца получили уведомление в очередь
+    with db.connect() as conn:
+        count = conn.execute('SELECT COUNT(*) FROM max_outbox').fetchone()[0]
+        messages = [dict(r) for r in conn.execute('SELECT * FROM max_outbox ORDER BY id').fetchall()]
+    assert count == 2
+    assert all('Плановое отключение воды' in m['text'] for m in messages)
+    assert {m['max_user_id'] for m in messages} == {111, 222}
+
+    # Жилец может получить список объявлений
+    r = client.get('/api/houses/h1/announcements', headers=headers('alice'))
+    assert r.status_code == 200
+    assert len(r.json()) == 1
+
+    # Житель другого дома — 404
+    r = client.get('/api/houses/h1/announcements', headers=headers('outsider'))
+    assert r.status_code == 404
+
+    # Житель не может создать объявление
+    r = client.post('/api/houses/h1/announcements', headers=headers('alice'), json={
+        'title': 'Тест', 'body': 'Тестовое объявление',
+    })
+    assert r.status_code == 403

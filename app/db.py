@@ -9,6 +9,15 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS houses (
  id TEXT PRIMARY KEY, address TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS management_companies (
+ id TEXT PRIMARY KEY,
+ name TEXT NOT NULL,
+ info_text TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS house_management_companies (
+ house_id TEXT PRIMARY KEY REFERENCES houses(id),
+ company_id TEXT NOT NULL REFERENCES management_companies(id)
+);
 CREATE TABLE IF NOT EXISTS house_districts (house_id TEXT PRIMARY KEY REFERENCES houses(id), district TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_house_districts_district ON house_districts(district);
 CREATE TABLE IF NOT EXISTS operator_districts (user_id TEXT NOT NULL REFERENCES users(id), district TEXT NOT NULL, PRIMARY KEY(user_id,district));
@@ -149,6 +158,16 @@ CREATE TABLE IF NOT EXISTS incident_tickets (
  PRIMARY KEY (incident_id, ticket_id)
 );
 CREATE INDEX IF NOT EXISTS incidents_house ON incidents(house_id, created_at);
+CREATE TABLE IF NOT EXISTS announcements (
+ id TEXT PRIMARY KEY,
+ house_id TEXT NOT NULL REFERENCES houses(id),
+ title TEXT NOT NULL,
+ body TEXT NOT NULL,
+ created_by TEXT NOT NULL REFERENCES users(id),
+ created_at TEXT NOT NULL,
+ sent_at TEXT
+);
+CREATE INDEX IF NOT EXISTS announcements_house ON announcements(house_id, created_at);
 """
 
 TICKET_MIGRATIONS = {

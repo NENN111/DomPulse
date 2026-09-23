@@ -98,3 +98,18 @@ class Profile(BaseModel):
     role: str
     house_id: str
     address: str
+
+
+class AnnouncementCreate(Input):
+    title: Annotated[str, StringConstraints(strip_whitespace=True, min_length=3, max_length=200)]
+    body: Annotated[str, StringConstraints(strip_whitespace=True, min_length=5, max_length=4000)]
+
+
+class Announcement(BaseModel):
+    id: str
+    house_id: str
+    title: str
+    body: str
+    created_by: str
+    created_at: str
+    sent_at: str | None = None

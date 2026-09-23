@@ -122,11 +122,11 @@ def menu(role: str = 'resident') -> tuple[str, list[dict[str, Any]]]:
     if role == 'operator':
         return (
             'ДомПульс: рабочее место диспетчера УК. Откройте очередь своего дома.',
-            keyboard([['Очередь дома'], ['Общие проблемы дома'], ['Показатели дома']]),
+            keyboard([['Очередь дома'], ['Общие проблемы дома'], ['Показатели дома'], ['Создать объявление']]),
         )
     return (
         'ДомПульс связывает жильца с управляющей компанией. Что хотите сделать?',
-        keyboard([['Сообщить о проблеме'], ['Мои обращения']]),
+        keyboard([['Сообщить о проблеме'], ['Мои обращения'], ['Объявления дома', 'Информация об УК']]),
     )
 
 
@@ -438,6 +438,19 @@ async def operator_metrics(conn, user, user_id: int, timestamp: str):
         f"{metrics['first_response_on_time_percent']:g}% ({metrics['responded_with_sla_data']} заявок)"
         if metrics['first_response_on_time_percent'] is not None else 'ещё нет данных'
     )
+    # Последние объявления дома
+    ann_cursor = await conn.execute(
+        'SELECT title, created_at FROM announcements WHERE house_id=? ORDER BY created_at DESC LIMIT 3',
+        (user['house_id'],)
+    )
+    announcements = await ann_cursor.fetchall()
+    if announcements:
+        ann_lines = 'Последние объявления:\n' + '\n'.join(
+            f"  • {row['title']} ({format_datetime(row['created_at'])})"
+            for row in announcements
+        )
+    else:
+        ann_lines = 'Объявлений пока нет'
     text = (
         'Показатели дома\n\n'
         f"Активные: {metrics['active']}\n"
@@ -447,10 +460,11 @@ async def operator_metrics(conn, user, user_id: int, timestamp: str):
         f"Ответ в пределах SLA: {closed}\n"
         f"Общие сигналы: {len(groups)}\n\n"
         f"Частые категории: {categories}\n"
-        f"Проблемные места: {locations}"
+        f"Проблемные места: {locations}\n\n"
+        f"{ann_lines}"
     )
     await save_dialog(conn, user_id, 'idle', {}, timestamp)
-    return text, keyboard([['Очередь дома'], ['Общие проблемы дома'], ['Показатели дома']])
+    return text, keyboard([['Очередь дома'], ['Общие проблемы дома'], ['Показатели дома'], ['Меню']])
 
 
 async def operator_ticket_card(conn, ticket) -> tuple[str, list[dict[str, Any]]]:
@@ -613,6 +627,21 @@ async def link_manual_resident(conn, user_id: int, payload: dict[str, Any], addr
     house_id = 'address-' + hashlib.sha256(address.casefold().encode('utf-8')).hexdigest()[:24]
     await conn.execute('INSERT OR IGNORE INTO houses(id,address) VALUES(?,?)', (house_id, address))
     await conn.execute('INSERT INTO house_districts(house_id,district) VALUES(?,?) ON CONFLICT(house_id) DO UPDATE SET district=excluded.district', (house_id, district))
+    # Привязать УК: сначала ищем по округу, иначе берём любую первую
+    mc_cursor = await conn.execute(
+        'SELECT DISTINCT hmc.company_id FROM house_management_companies hmc '
+        'JOIN house_districts hd ON hd.house_id = hmc.house_id WHERE hd.district = ?',
+        (district,)
+    )
+    mc_row = await mc_cursor.fetchone()
+    if mc_row is None:
+        mc_cursor = await conn.execute('SELECT id FROM management_companies LIMIT 1')
+        mc_row = await mc_cursor.fetchone()
+    if mc_row:
+        await conn.execute(
+            'INSERT OR IGNORE INTO house_management_companies(house_id, company_id) VALUES(?,?)',
+            (house_id, mc_row[0]),
+        )
     internal_id = f'max-resident-{user_id}'
     await conn.execute('INSERT OR IGNORE INTO users(id,name,role,house_id,token_hash) VALUES(?,?,?,?,?)', (internal_id, display_name(payload, user_id), 'resident', house_id, token_hash(secrets.token_urlsafe(32))))
     await conn.execute('INSERT OR REPLACE INTO max_links(max_user_id,user_id,linked_at) VALUES(?,?,?)', (user_id, internal_id, timestamp))
@@ -904,7 +933,52 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
             )
             await save_dialog(conn, user_id, 'idle', {}, timestamp)
             return f"Заявка #{ticket['id'][:8]}: статус «{label}» сохранён.", keyboard([['Очередь дома']])
-        return 'Выберите действие из меню диспетчера.', keyboard([['Очередь дома']])
+        if text == 'Создать объявление':
+            await save_dialog(conn, user_id, 'announcement_title', {}, timestamp)
+            return 'Введите заголовок объявления (3-200 символов).', keyboard([['Отмена']])
+        if state == 'announcement_title':
+            if not 3 <= len(text) <= 200:
+                return 'Заголовок должен содержать от 3 до 200 символов.', keyboard([['Отмена']])
+            await save_dialog(conn, user_id, 'announcement_body', {'title': text}, timestamp)
+            return 'Теперь напишите текст объявления. Опишите все подробности.', keyboard([['Отмена']])
+        if state == 'announcement_body':
+            if not 5 <= len(text) <= 4000:
+                return 'Текст должен содержать от 5 до 4000 символов.', keyboard([['Отмена']])
+            await save_dialog(conn, user_id, 'announcement_confirm', {**draft, 'body': text}, timestamp)
+            return (
+                f"Проверьте объявление перед отправкой:\n\n"
+                f"{draft.get('title', '')}\n{text}"
+            ), keyboard([['Отправить всем жильцам'], ['Отмена']])
+        if state == 'announcement_confirm' and text == 'Отправить всем жильцам':
+            title = draft.get('title', '')
+            body = draft.get('body', '')
+            if not title or not body:
+                await save_dialog(conn, user_id, 'idle', {}, timestamp)
+                return 'Ошибка чтения данных. Начните снова.', keyboard([['Создать объявление'], ['Очередь дома']])
+            announcement_id = str(uuid4())
+            msg_text = f'Объявление от УК\n\n{title}\n\n{body}'
+            await conn.execute(
+                'INSERT INTO announcements(id,house_id,title,body,created_by,created_at) VALUES(?,?,?,?,?,?)',
+                (announcement_id, user['house_id'], title, body, user['id'], timestamp),
+            )
+            res_cursor = await conn.execute(
+                "SELECT l.max_user_id FROM max_links l JOIN users u ON u.id=l.user_id WHERE u.house_id=? AND u.role='resident'",
+                (user['house_id'],)
+            )
+            residents = await res_cursor.fetchall()
+            for row in residents:
+                await queue_message(
+                    conn, row['max_user_id'], msg_text,
+                    keyboard([['Объявления дома'], ['Мои обращения']]),
+                    timestamp,
+                )
+            await conn.execute('UPDATE announcements SET sent_at=? WHERE id=?', (timestamp, announcement_id))
+            await save_dialog(conn, user_id, 'idle', {}, timestamp)
+            return (
+                f'Объявление отправлено {len(residents)} жильцам дома.',
+                keyboard([['Очередь дома'], ['Создать объявление']]),
+            )
+        return 'Выберите действие из меню диспетчера.', keyboard([['Очередь дома'], ['Создать объявление']])
     if text.startswith('Обращение #'):
         prefix = text.removeprefix('Обращение #').strip()
         if len(prefix) != 8 or not prefix.isalnum():
@@ -933,6 +1007,21 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
         buttons = [[f"Обращение #{ticket['id'][:8]}"] for ticket in rows]
         buttons.extend([['Сообщить о проблеме'], ['Меню']])
         return '\n'.join(lines), keyboard(buttons)
+    if text == 'Информация об УК':
+        cursor = await conn.execute(
+            'SELECT mc.name, mc.info_text FROM management_companies mc '
+            'JOIN house_management_companies hmc ON hmc.company_id = mc.id '
+            'WHERE hmc.house_id = ?',
+            (user['house_id'],)
+        )
+        mc_row = await cursor.fetchone()
+        if mc_row:
+            reply = f"{mc_row['name']}\n\n{mc_row['info_text']}"
+        else:
+            reply = "Информация об управляющей компании для вашего дома не найдена."
+        
+        await save_dialog(conn, user_id, 'idle', {}, timestamp)
+        return reply, keyboard([['Сообщить о проблеме'], ['Мои обращения'], ['Информация об УК']])
     if text == 'Сообщить о проблеме':
         await save_dialog(conn, user_id, 'category', {}, timestamp)
         labels = list(CATEGORIES)
