@@ -123,11 +123,17 @@ def menu(role: str = 'resident') -> tuple[str, list[dict[str, Any]]]:
     if role == 'operator':
         return (
             'ДомПульс: рабочее место диспетчера УК. Откройте очередь своего дома.',
-            keyboard([['Очередь дома'], ['Общие проблемы дома'], ['Показатели дома'], ['Создать объявление']]),
+            keyboard([
+                ['Очередь дома'], ['Общие проблемы дома'], ['Показатели дома'],
+                ['Создать объявление'], ['Мой профиль и дом'], ['Информация об УК'],
+            ]),
         )
     return (
         'ДомПульс связывает жильца с управляющей компанией. Что хотите сделать?',
-        keyboard([['Сообщить о проблеме'], ['Мои обращения'], ['Объявления дома', 'Информация об УК']]),
+        keyboard([
+            ['Сообщить о проблеме'], ['Мои обращения'],
+            ['Информация об УК', 'Объявления дома'], ['Мой профиль и дом'],
+        ]),
     )
 
 
@@ -249,6 +255,75 @@ async def notify_ticket_resident(conn, ticket, text: str, timestamp: str, confir
         attachments = keyboard([['Да, всё решено'], ['Проблема осталась']])
         await save_dialog(conn, link['max_user_id'], 'confirm', {'ticket_id': ticket['id']}, timestamp)
     await queue_message(conn, link['max_user_id'], text, attachments, timestamp)
+
+
+async def house_and_management_info(conn, user):
+    cursor = await conn.execute(
+        'SELECT h.address,mc.name,mc.info_text FROM houses h '
+        'LEFT JOIN house_management_companies hmc ON hmc.house_id=h.id '
+        'LEFT JOIN management_companies mc ON mc.id=hmc.company_id WHERE h.id=?',
+        (user['house_id'],),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return 'Не удалось найти данные дома.', menu(user['role'])[1]
+    if row['name'] is None:
+        return (
+            f"Ваш дом\n{row['address']}\n\nИнформация об управляющей компании ещё не заполнена.",
+            menu(user['role'])[1],
+        )
+    return (
+        f"Ваш дом\n{row['address']}\n\n"
+        f"Управляющая компания\n{row['name']}\n\n{row['info_text']}",
+        menu(user['role'])[1],
+    )
+
+
+async def profile_and_house(conn, user_id: int):
+    cursor = await conn.execute(
+        'SELECT u.name,u.role,h.id AS house_id,h.address,hd.district,l.linked_at,'
+        'rv.provider,rv.registration_type,rv.verified_at '
+        'FROM max_links l JOIN users u ON u.id=l.user_id '
+        'JOIN houses h ON h.id=u.house_id '
+        'LEFT JOIN house_districts hd ON hd.house_id=h.id '
+        'LEFT JOIN residency_verifications rv ON rv.user_id=u.id '
+        'WHERE l.max_user_id=?',
+        (user_id,),
+    )
+    profile = await cursor.fetchone()
+    if profile is None:
+        return 'Профиль не найден. Запустите бота командой /start.', keyboard([['Меню']])
+
+    if profile['provider'] == 'gosuslugi':
+        registration = {
+            'permanent': 'постоянная регистрация',
+            'temporary': 'временная регистрация',
+        }.get(profile['registration_type'], 'подтверждённая регистрация')
+        verification = f'Госуслуги, {registration}'
+    elif profile['house_id'].startswith('address-'):
+        verification = 'адрес проверен Геокодером Яндекса'
+    else:
+        verification = 'одноразовый код управляющей компании'
+
+    role = 'житель' if profile['role'] == 'resident' else 'диспетчер УК'
+    district = profile['district'] or 'не указан'
+    lines = [
+        'Мой профиль и дом',
+        f"Имя: {profile['name']}",
+        f'Роль: {role}',
+        f"Дом: {profile['address']}",
+        f'Округ: {district}',
+        f'Способ привязки: {verification}',
+        f"Профиль привязан: {format_datetime(profile['linked_at'])}",
+    ]
+    if profile['verified_at']:
+        lines.append(f"Адрес подтверждён: {format_datetime(profile['verified_at'])}")
+
+    buttons = [['Информация об УК']]
+    if profile['role'] == 'resident':
+        buttons.append(['Сообщить о проблеме'])
+    buttons.append(['Меню'])
+    return '\n'.join(lines), keyboard(buttons)
 
 
 async def operator_queue(conn, user, user_id: int, timestamp: str, district: str | None = None):
@@ -777,6 +852,12 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
         await save_dialog(conn, user_id, 'idle', {}, timestamp)
         reply, attachments = menu(user['role'])
         return 'Создание обращения отменено.\n\n' + reply, attachments
+    if text in {'Информация об УК', 'О доме и УК'}:
+        await save_dialog(conn, user_id, 'idle', {}, timestamp)
+        return await house_and_management_info(conn, user)
+    if text == 'Мой профиль и дом':
+        await save_dialog(conn, user_id, 'idle', {}, timestamp)
+        return await profile_and_house(conn, user_id)
     if user['role'] == 'operator':
         if text == 'Показатели дома':
             return await operator_metrics(conn, user, user_id, timestamp)

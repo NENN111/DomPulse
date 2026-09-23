@@ -232,15 +232,26 @@ def test_network_retry_preserves_marker(tmp_path, monkeypatch):
 
 
 def test_env_loads_literals_without_overwriting_shell(tmp_path, monkeypatch):
-    for key in ('MAX_BOT_TOKEN', 'MAX_API_BASE', 'DOMPULSE_DB'):
+    for key in (
+        'MAX_BOT_TOKEN', 'MAX_API_BASE', 'DOMPULSE_DB',
+        'GOSUSLUGI_BRIDGE_URL', 'GOSUSLUGI_BRIDGE_SECRET',
+        'YANDEX_MAPS_ALLOW_STORAGE', 'SSL_CERT_FILE',
+    ):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv('MAX_BOT_TOKEN', 'from-shell')
     env = tmp_path / '.env'
     env.write_text('\ufeff# settings\nMAX_BOT_TOKEN="from-file"\nDOMPULSE_DB="C:\\data\\bot.db"\n'
-                   'MAX_API_BASE=https://max.test\nMAX_WEBHOOK_SECRET=unused\n', encoding='utf-8')
+                   'MAX_API_BASE=https://max.test\nMAX_WEBHOOK_SECRET=unused\n'
+                   'GOSUSLUGI_BRIDGE_URL=https://bridge.test/connect\n'
+                   'GOSUSLUGI_BRIDGE_SECRET=bridge-secret\n'
+                   'YANDEX_MAPS_ALLOW_STORAGE=false\nSSL_CERT_FILE=C:\\certs\\root.pem\n', encoding='utf-8')
     polling.load_env(env)
     assert polling.os.environ['MAX_BOT_TOKEN'] == 'from-shell'
     assert polling.os.environ['DOMPULSE_DB'] == 'C:\\data\\bot.db'
+    assert polling.os.environ['GOSUSLUGI_BRIDGE_URL'] == 'https://bridge.test/connect'
+    assert polling.os.environ['GOSUSLUGI_BRIDGE_SECRET'] == 'bridge-secret'
+    assert polling.os.environ['YANDEX_MAPS_ALLOW_STORAGE'] == 'false'
+    assert polling.os.environ['SSL_CERT_FILE'] == 'C:\\certs\\root.pem'
 
 
 def test_missing_token_fails_before_network(tmp_path, monkeypatch):

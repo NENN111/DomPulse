@@ -66,6 +66,60 @@ def test_webhook_verifies_secret_deduplicates_and_queues(max_app):
     assert '/код' in message['text']
 
 
+def test_resident_sees_management_company_information(max_app):
+    client, db = max_app
+    headers = {'X-Max-Bot-Api-Secret': 'test-webhook-secret'}
+    enroll(client, db, headers, 1451)
+    with db.connect(write=True) as conn:
+        conn.execute(
+            'INSERT INTO management_companies VALUES(?,?,?)',
+            ('test-company', 'Тестовая УК',
+             'Адрес офиса: Город, улица Офисная, 1\nЧасы работы: Пн–Пт: 09:00–18:00\n'
+             'Телефон: +7 000 000-00-00\nАварийная служба: +7 000 000-00-01'),
+        )
+        conn.execute(
+            'INSERT INTO house_management_companies VALUES(?,?)',
+            ('test-house', 'test-company'),
+        )
+
+    response = client.post('/webhooks/max', headers=headers, json=update('management-info', 'О доме и УК', 1451))
+    assert response.status_code == 200
+    with db.connect() as conn:
+        text = conn.execute(
+            'SELECT text FROM max_outbox WHERE max_user_id=? ORDER BY id DESC LIMIT 1', (1451,)
+        ).fetchone()[0]
+    assert 'Тестовая УК' in text
+    assert 'Аварийная служба: +7 000 000-00-01' in text
+
+
+def test_profile_shows_house_district_and_link_method(max_app):
+    client, db = max_app
+    headers = {'X-Max-Bot-Api-Secret': 'test-webhook-secret'}
+    enroll(client, db, headers, 1452)
+    with db.connect(write=True) as conn:
+        conn.execute(
+            'INSERT INTO house_districts(house_id,district) VALUES(?,?)',
+            ('test-house', 'ЦАО'),
+        )
+
+    response = client.post(
+        '/webhooks/max', headers=headers,
+        json=update('profile-info', 'Мой профиль и дом', 1452),
+    )
+    assert response.status_code == 200
+    with db.connect() as conn:
+        reply = dict(conn.execute(
+            'SELECT text,attachments_json FROM max_outbox '
+            'WHERE max_user_id=? ORDER BY id DESC LIMIT 1', (1452,),
+        ).fetchone())
+    assert 'Роль: житель' in reply['text']
+    assert 'Дом: Тестовый дом, 1' in reply['text']
+    assert 'Округ: ЦАО' in reply['text']
+    assert 'Способ привязки: одноразовый код управляющей компании' in reply['text']
+    buttons = json.loads(reply['attachments_json'])[0]['payload']['buttons']
+    assert {'type': 'message', 'text': 'Сообщить о проблеме'} in [button for row in buttons for button in row]
+
+
 def test_photo_is_kept_when_sent_before_category(max_app):
     client, db = max_app
     headers = {'X-Max-Bot-Api-Secret': 'test-webhook-secret'}
