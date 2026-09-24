@@ -3,6 +3,18 @@ const STATUSES = {new:'Новое',accepted:'Принято',in_progress:'В р�
 const PRIORITIES = {normal:'Обычная',urgent:'Срочно',emergency:'Авария'};
 const NEXT = {new:['accepted','Принять'],accepted:['in_progress','Начать работу'],in_progress:['resolved','Отметить выполненным'],reopened:['in_progress','Вернуть в работу']};
 const $ = selector => document.querySelector(selector);
+const themeToggle = $('#theme-toggle');
+function setTheme(theme) {
+  const dark = theme === 'dark';
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  themeToggle.textContent = dark ? 'Светлая тема' : 'Тёмная тема';
+  themeToggle.setAttribute('aria-pressed', String(dark));
+  document.querySelector('meta[name="theme-color"]').content = dark ? '#171a23' : '#f6f7f9';
+  try { localStorage.setItem('dompulse-theme', dark ? 'dark' : 'light'); } catch {}
+}
+themeToggle.addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
+themeToggle.textContent = document.documentElement.dataset.theme === 'dark' ? 'Светлая тема' : 'Тёмная тема';
+themeToggle.setAttribute('aria-pressed', String(document.documentElement.dataset.theme === 'dark'));
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const fmtDate = value => value ? new Intl.DateTimeFormat('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit',timeZone:'Europe/Moscow'}).format(new Date(value)) : '—';
 const overdue = ticket => ticket.due_at && !ticket.first_response_at && new Date(ticket.due_at) < new Date();
@@ -21,7 +33,8 @@ function showLogin(message='') {
 function showApp() { $('.main-content').classList.remove('login-locked'); }
 window.WebApp?.ready?.();
 
-function notify(message, success=false) { const el=$('#notice'); el.textContent=message; el.className='notice'+(success?' success':''); el.hidden=false; setTimeout(()=>{el.hidden=true},6000); }
+let noticeTimer;
+function notify(message, success=false) { const el=$('#notice'); clearTimeout(noticeTimer); el.textContent=message; el.className='notice'+(success?' success':''); el.hidden=false; noticeTimer=setTimeout(()=>{el.hidden=true},6000); }
 async function api(path, options={}) {
   if (!launch && !siteSession) throw new Error('Откройте приложение через новую кнопку в боте MAX.');
   const authHeader=launch ? {'X-Max-Init-Data':launch} : {'X-Miniapp-Session':siteSession};
@@ -42,8 +55,15 @@ function demoData() {
   ];
   return {operator:{name:'Оператор УК'},houses:[{id:'demo-house',address:'Лиственничная аллея, 16'}],house_id:'demo-house',tickets,signals:[{ticket_ids:['demo-water-1','demo-water-2'],category:'water',location:'Подвал',count:2,description:'Течь трубы в подвале'}],announcements:[{title:'ДЕМО: плановые работы в доме',created_at:date(60)}],metrics:{active:4,emergency:1,overdue:1,average_first_response_minutes:60,responded_with_sla_data:4,first_response_on_time_percent:75,top_categories:[['water',2],['heating',1],['elevator',1]],top_locations:[['Подвал',2],['Подъезд 2',1],['Лифт',1]]}};
 }
-async function load() {
+async function load(announce=false) {
   if(!preview && !launch && !siteSession){showLogin();return;}
+  const refresh=$('#refresh-btn');
+  if(announce && refresh.disabled) return;
+  if(announce) {
+    refresh.disabled=true;
+    refresh.classList.add('is-loading');
+    refresh.setAttribute('aria-busy','true');
+  }
   try {
     const selected=$('#house-select').value;
     data=preview ? demoData() : await api('/api/miniapp/overview'+(selected?'?house_id='+encodeURIComponent(selected):''));
@@ -51,7 +71,15 @@ async function load() {
     $('#operator-name').textContent=data.operator.name+(preview?' · просмотр макета':'');
     $('#house-select').innerHTML=data.houses.map(h=>`<option value="${esc(h.id)}" ${h.id===data.house_id?'selected':''}>${esc(h.address)}</option>`).join('');
     render();
+    if(announce) notify(preview?'Демонстрационные данные обновлены':'Данные обновлены',true);
   } catch(err) { notify(err.message); $('#operator-name').textContent='Данные недоступны'; }
+  finally {
+    if(announce) {
+      refresh.disabled=false;
+      refresh.classList.remove('is-loading');
+      refresh.removeAttribute('aria-busy');
+    }
+  }
 }
 function render() {
   if (!data) return;
@@ -121,7 +149,7 @@ document.addEventListener('click',async event=>{
 });
 document.addEventListener('keydown',event=>{if(event.key==='Escape')closeDrawer();if((event.key==='Enter'||event.key===' ')&&event.target.matches('[data-ticket]')){event.preventDefault();openTicket(event.target.dataset.ticket)}});
 $('#drawer-close').addEventListener('click',closeDrawer);$('#drawer-backdrop').addEventListener('click',closeDrawer);
-$('#house-select').addEventListener('change',load);$('#refresh-btn').addEventListener('click',load);
+$('#house-select').addEventListener('change',()=>load());$('#refresh-btn').addEventListener('click',()=>load(true));
 $('#ticket-filter').addEventListener('change',renderQueue);$('#ticket-search').addEventListener('input',renderQueue);
 const initialTab=new URLSearchParams(location.search).get('tab');
 if(['queue','signals','metrics'].includes(initialTab))switchTab(initialTab);

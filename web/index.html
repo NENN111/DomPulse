@@ -3,34 +3,46 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#f5f7fb">
+  <meta name="theme-color" content="#f6f7f9">
+  <script>
+    (() => {
+      try {
+        const saved = localStorage.getItem('dompulse-theme');
+        const dark = saved ? saved === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+        document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+        document.querySelector('meta[name="theme-color"]').content = dark ? '#171a23' : '#f6f7f9';
+      } catch {
+        document.documentElement.dataset.theme = 'light';
+      }
+    })();
+  </script>
   <title>ДомПульс — проблемы и показатели</title>
-  <link rel="stylesheet" href="/miniapp/assets/style.css">
+  <link rel="stylesheet" href="/miniapp/assets/style.css?v=0b03eeefc9">
   <script src="https://st.max.ru/js/max-web-app.js" defer></script>
-  <script src="/miniapp/assets/app.js" defer></script>
+  <script src="/miniapp/assets/app.js?v=8c7732c9fa" defer></script>
 </head>
 <body>
-  <div class="app-shell">
-    <header class="topbar">
-      <div class="brand"><span class="brand-mark">Д</span><span>ДомПульс</span></div>
-      <span class="topbar-label">Управляющая компания</span>
-    </header>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">Д</span><span>ДомПульс</span></div>
+      <button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false">Тёмная тема</button>
+    </div>
+  </header>
 
+  <div class="app-shell">
     <main class="main-content login-locked">
       <section id="login-panel" class="login-panel" aria-labelledby="login-title">
-        <span class="eyebrow">ВХОД ДЛЯ ОПЕРАТОРА</span>
         <h1 id="login-title">Проблемы и показатели</h1>
         <p>Откройте приложение через новую кнопку в чате с ботом MAX.</p>
         <p id="login-error" class="login-error" role="alert" hidden></p>
       </section>
       <section class="page-intro">
-        <div class="eyebrow">РАБОЧЕЕ МЕСТО ОПЕРАТОРА</div>
         <h1>Проблемы и показатели</h1>
         <p id="operator-name">Загрузка данных…</p>
         <div class="house-row">
           <label for="house-select">Дом</label>
           <select id="house-select" aria-label="Выберите дом"></select>
-          <button id="refresh-btn" class="icon-button" title="Обновить данные" aria-label="Обновить данные">↻</button>
+          <button id="refresh-btn" class="icon-button" title="Обновить данные" aria-label="Обновить данные"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/></svg></button>
         </div>
       </section>
 
@@ -43,7 +55,7 @@
       <div id="notice" class="notice" role="status" hidden></div>
 
       <section id="queue-panel" class="panel active" aria-label="Очередь дома">
-        <div class="section-heading"><div><span class="eyebrow">ОБРАЩЕНИЯ</span><h2>Очередь дома</h2></div><span id="queue-total" class="section-aside"></span></div>
+        <div class="section-heading"><div><h2>Очередь дома</h2></div><span id="queue-total" class="section-aside"></span></div>
         <div class="filters">
           <label class="search-field"><span class="sr-only">Поиск по заявкам</span><input id="ticket-search" type="search" placeholder="Найти по месту или описанию"></label>
           <select id="ticket-filter" aria-label="Фильтр заявок"><option value="active">Активные</option><option value="all">Все заявки</option><option value="overdue">Просроченные</option><option value="emergency">Аварийные</option></select>
@@ -52,13 +64,13 @@
       </section>
 
       <section id="signals-panel" class="panel" aria-label="Общие проблемы">
-        <div class="section-heading"><div><span class="eyebrow">ПОВТОРЯЮЩИЕСЯ ОБРАЩЕНИЯ</span><h2>Общие проблемы</h2></div></div>
+        <div class="section-heading"><div><h2>Общие проблемы</h2></div></div>
         <p class="section-description">Похожие заявки требуют решения оператора. Подтверждайте общий инцидент, только если причина действительно одна.</p>
         <div id="signal-list" class="signal-list"></div>
       </section>
 
       <section id="metrics-panel" class="panel" aria-label="Показатели дома">
-        <div class="section-heading"><div><span class="eyebrow">СОСТОЯНИЕ ДОМА</span><h2>Показатели дома</h2></div><span class="section-aside">Данные обновляются при открытии</span></div>
+        <div class="section-heading"><div><h2>Показатели дома</h2></div><span class="section-aside">Данные обновляются при открытии</span></div>
         <div id="metrics-content"></div>
       </section>
     </main>
@@ -66,7 +78,7 @@
 
   <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
   <aside id="ticket-drawer" class="ticket-drawer" aria-label="Карточка обращения" aria-hidden="true">
-    <div class="drawer-header"><div><span class="eyebrow">КАРТОЧКА ОБРАЩЕНИЯ</span><h2 id="drawer-title">Заявка</h2></div><button id="drawer-close" class="icon-button" aria-label="Закрыть карточку">×</button></div>
+    <div class="drawer-header"><div><h2 id="drawer-title">Заявка</h2></div><button id="drawer-close" class="icon-button" aria-label="Закрыть карточку"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 5l14 14M19 5L5 19"/></svg></button></div>
     <div id="drawer-content" class="drawer-content"></div>
   </aside>
 </body>
