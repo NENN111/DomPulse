@@ -1,4 +1,3 @@
-import copy
 import hashlib
 import hmac
 import json
@@ -12,12 +11,10 @@ from uuid import uuid4
 from fastapi import HTTPException, Request
 
 from .db import AsyncDatabase, token_hash
-from .analytics import house_metrics
-from .access import MOSCOW_DISTRICTS, allowed_house_ids, can_access_house, district_house_ids, house_district
-from .sla import calculate_due_at, is_overdue
+from .access import MOSCOW_DISTRICTS
+from .sla import calculate_due_at
 from .residency import begin_verified_link, display_name, normalize_house_address
 from .geocoder import GeocoderError, geocode_address
-from .miniapp_login import issue_code
 
 MAX_WEBHOOK_BYTES = 256 * 1024
 
@@ -98,13 +95,13 @@ STATUS_LABELS = {
     'resolved': 'ожидает проверки', 'confirmed': 'выполнено', 'reopened': 'возвращено в работу',
 }
 PRIORITY_LABELS = {'normal': 'обычная', 'urgent': 'срочно', 'emergency': 'авария'}
-OPERATOR_ACTIONS = {
-    'new': ('Принять', 'accepted'),
-    'accepted': ('Начать работу', 'in_progress'),
-    'in_progress': ('Отметить выполнено', 'resolved'),
-    'reopened': ('Вернуть в работу', 'in_progress'),
+LEGACY_OPERATOR_COMMANDS = {
+    'Код входа', 'Очередь дома', 'Обновить очередь',
+    'Общие проблемы дома', 'Обновить сигналы', 'Показатели дома',
+    'Округа заявок', 'Ответить жителю', 'Изменить срочность',
+    'Принять', 'Начать работу', 'Вернуть в работу', 'Отметить выполненным',
+    'Обычная срочность', 'Срочно', 'Авария', 'Отправить всем жильцам',
 }
-
 
 def keyboard(rows: list[list[str]]) -> list[dict[str, Any]]:
     return [{
@@ -114,17 +111,6 @@ def keyboard(rows: list[list[str]]) -> list[dict[str, Any]]:
 
 
 async def queue_message(conn, user_id: int, text: str, attachments: list[dict[str, Any]], timestamp: str):
-    public_url = os.getenv('MINIAPP_PUBLIC_URL', '').strip()
-    if public_url.startswith('https://'):
-        attachments = copy.deepcopy(attachments)
-        for attachment in attachments:
-            if attachment.get('type') != 'inline_keyboard':
-                continue
-            for row in attachment.get('payload', {}).get('buttons', []):
-                for button in row:
-                    if button.get('type') == 'link' and button.get('url') == public_url:
-                        code = await issue_code(conn, user_id)
-                        button['url'] = f'{public_url}#login={code.replace("-", "")}'
     await conn.execute(
         'INSERT INTO max_outbox(max_user_id,text,attachments_json,next_attempt_at,created_at) '
         'VALUES(?,?,?,?,?)',
@@ -433,34 +419,6 @@ async def houses_menu(conn, user, user_id: int, timestamp: str):
     return '\n'.join(lines), keyboard(buttons)
 
 
-async def operator_queue(conn, user, user_id: int, timestamp: str, district: str | None = None):
-    house_ids = await __import__('app.access', fromlist=['allowed_house_ids']).allowed_house_ids(conn, user)
-    marks = ','.join('?' for _ in house_ids)
-    cursor = await conn.execute(
-        f"SELECT * FROM tickets WHERE house_id IN ({marks}) AND status!='confirmed' "
-        "ORDER BY CASE WHEN due_at IS NOT NULL AND due_at<? AND first_response_at IS NULL THEN 0 ELSE 1 END, "
-        "CASE priority WHEN 'emergency' THEN 0 WHEN 'urgent' THEN 1 ELSE 2 END, created_at LIMIT 5",
-        (*house_ids, timestamp),
-    )
-    tickets = await cursor.fetchall()
-    if not tickets:
-        await save_dialog(conn, user_id, 'operator_select', {}, timestamp)
-        return 'В очереди нет активных обращений.', keyboard([['Обновить очередь'], ['Назад']])
-    lines = ['Очередь дома:']
-    buttons = []
-    for ticket in tickets:
-        prefix = ticket['id'][:8]
-        lines.append(
-            f"• #{prefix} · {PRIORITY_LABELS[ticket['priority']]} · {STATUS_LABELS[ticket['status']]}"
-            f"{' · ПРОСРОЧЕНО' if is_overdue(ticket['due_at'], ticket['first_response_at']) else ''}\n"
-            f"  {ticket['location']} — {ticket['description'][:70]}"
-        )
-        buttons.append([f'Заявка #{prefix}'])
-    buttons.extend([['Обновить очередь'], ['Назад']])
-    await save_dialog(conn, user_id, 'operator_select', {}, timestamp)
-    return '\n'.join(lines), keyboard(buttons)
-
-
 STOP_WORDS = {
     'это', 'как', 'так', 'что', 'при', 'для', 'уже', 'еще', 'ещё', 'или', 'был', 'была',
     'более', 'после', 'очень', 'когда', 'весь', 'надо', 'есть', 'дом', 'подъезд', 'этаж',
@@ -502,37 +460,6 @@ def similar_groups(tickets: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
                 primary.extend(extra)
                 groups.remove(extra)
     return [group for group in groups if len(group) >= 2]
-
-
-async def operator_insights(conn, user, user_id: int, timestamp: str):
-    cursor = await conn.execute(
-        "SELECT t.* FROM tickets t LEFT JOIN incident_tickets it ON it.ticket_id=t.id "
-        "WHERE t.house_id=? AND t.status!='confirmed' AND it.ticket_id IS NULL "
-        'ORDER BY t.created_at DESC LIMIT 100',
-        (user['house_id'],),
-    )
-    tickets = [dict(row) for row in await cursor.fetchall()]
-    groups = sorted(similar_groups(tickets), key=len, reverse=True)
-    if not groups:
-        await save_dialog(conn, user_id, 'idle', {}, timestamp)
-        return 'Новых повторяющихся проблем пока не обнаружено.', keyboard([['Очередь дома'], ['Меню']])
-    groups = groups[:5]
-    lines = ['Возможные общедомовые проблемы:']
-    buttons = []
-    for number, group in enumerate(groups, 1):
-        sample = group[0]
-        ids = ', '.join(f"#{item['id'][:8]}" for item in group)
-        lines.append(
-            f"\n{number}. {len(group)} обращения · категория «{CATEGORY_LABELS[sample['category']]}» · {sample['location']}\n"
-            f"  Связанные заявки: {ids}"
-        )
-        buttons.append([f'Открыть сигнал {number}'])
-    lines.append('\nЭто рекомендация: перед объявлением общего инцидента проверьте заявки вручную.')
-    buttons.extend([['Обновить сигналы'], ['Очередь дома']])
-    await save_dialog(conn, user_id, 'operator_insights', {
-        'groups': [[ticket['id'] for ticket in group] for group in groups],
-    }, timestamp)
-    return '\n'.join(lines), keyboard(buttons)
 
 
 async def incident_signal_card(conn, user, ticket_ids: list[str]):
@@ -595,98 +522,6 @@ async def announce_incident(conn, user, ticket_ids: list[str], priority: str, ti
             timestamp,
         )
     return incident_id, len(tickets)
-
-
-def format_minutes(value: float | None) -> str:
-    if value is None:
-        return 'ещё нет данных'
-    if value < 60:
-        return f'{value:g} мин.'
-    hours, minutes = divmod(round(value), 60)
-    return f'{hours} ч. {minutes} мин.'
-
-
-async def operator_metrics(conn, user, user_id: int, timestamp: str):
-    metrics = await house_metrics(conn, house_ids=await allowed_house_ids(conn, user))
-    active = [ticket for ticket in metrics['tickets'] if ticket['status'] != 'confirmed']
-    groups = similar_groups(active)
-    categories = ', '.join(
-        f"{CATEGORY_LABELS[category]} — {count}"
-        for category, count in metrics['top_categories']
-    ) or 'нет активных'
-    locations = ', '.join(
-        f'{location} — {count}' for location, count in metrics['top_locations']
-    ) or 'нет активных'
-    closed = (
-        f"{metrics['first_response_on_time_percent']:g}% ({metrics['responded_with_sla_data']} заявок)"
-        if metrics['first_response_on_time_percent'] is not None else 'ещё нет данных'
-    )
-    # Последние объявления дома
-    ann_cursor = await conn.execute(
-        'SELECT title, created_at FROM announcements WHERE house_id=? ORDER BY created_at DESC LIMIT 3',
-        (user['house_id'],)
-    )
-    announcements = await ann_cursor.fetchall()
-    if announcements:
-        ann_lines = 'Последние объявления:\n' + '\n'.join(
-            f"  • {row['title']} ({format_datetime(row['created_at'])})"
-            for row in announcements
-        )
-    else:
-        ann_lines = 'Объявлений пока нет'
-    text = (
-        'Показатели дома\n\n'
-        f"Активные: {metrics['active']}\n"
-        f"Аварийные: {metrics['emergency']}\n"
-        f"Просроченные: {metrics['overdue']}\n"
-        f"Средняя первая реакция: {format_minutes(metrics['average_first_response_minutes'])}\n"
-        f"Ответ в пределах SLA: {closed}\n"
-        f"Общие сигналы: {len(groups)}\n\n"
-        f"Частые категории: {categories}\n"
-        f"Проблемные места: {locations}\n\n"
-        f"{ann_lines}"
-    )
-    await save_dialog(conn, user_id, 'idle', {}, timestamp)
-    return text, keyboard([['Очередь дома'], ['Общие проблемы дома'], ['Показатели дома'], ['Меню']])
-
-
-async def operator_ticket_card(conn, ticket) -> tuple[str, list[dict[str, Any]]]:
-    cursor = await conn.execute(
-        "SELECT metadata_json FROM ticket_attachments WHERE ticket_id=? AND type='image' ORDER BY id",
-        (ticket['id'],),
-    )
-    rows = await cursor.fetchall()
-    images = []
-    for row in rows:
-        try:
-            metadata = json.loads(row['metadata_json'])
-        except (TypeError, ValueError):
-            continue
-        payload = {}
-        if metadata.get('token'):
-            payload['token'] = metadata['token']
-        elif isinstance(metadata.get('url'), str) and metadata['url'].startswith(('https://', 'http://')):
-            payload['url'] = metadata['url']
-        if payload:
-            images.append({'type': 'image', 'payload': payload})
-
-    lines = [
-        f"Заявка #{ticket['id'][:8]}",
-        f"Категория: {CATEGORY_LABELS[ticket['category']]}",
-        f"Место: {ticket['location']}",
-        f"Статус: {STATUS_LABELS[ticket['status']]}",
-        f"Приоритет: {PRIORITY_LABELS[ticket['priority']]}",
-        f"Срок реакции: {format_datetime(ticket['due_at'])}"
-        f"{' · ПРОСРОЧЕНО' if is_overdue(ticket['due_at'], ticket['first_response_at']) else ''}",
-        f"Фото: {len(rows)}",
-        '', ticket['description'],
-    ]
-    buttons: list[list[str]] = []
-    action = OPERATOR_ACTIONS.get(ticket['status'])
-    if action:
-        buttons.append([action[0]])
-    buttons.extend([['Ответить жителю'], ['Изменить срочность'], ['Очередь дома']])
-    return '\n'.join(lines), images + keyboard(buttons)
 
 
 async def resident_ticket_card(conn, ticket, user):
@@ -951,7 +786,7 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
     if text == 'Отмена':
         await save_dialog(conn, user_id, 'idle', {}, timestamp)
         reply, attachments = menu(user['role'])
-        cancelled = 'Действие отменено.' if state.startswith(('house', 'add_house')) else 'Создание обращения отменено.'
+        cancelled = 'Действие отменено.' if user['role'] == 'operator' or state.startswith(('house', 'add_house')) else 'Создание обращения отменено.'
         return cancelled + '\n\n' + reply, attachments
     if user['role'] == 'resident' and text == 'Мои дома':
         return await houses_menu(conn, user, user_id, timestamp)
@@ -1067,170 +902,20 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
         await save_dialog(conn, user_id, 'idle', {}, timestamp)
         return await profile_and_house(conn, user_id)
     if user['role'] == 'operator':
-        if text == 'Код входа':
-            code = await issue_code(conn, user_id)
-            _, attachments = menu('operator')
-            return (
-                f'Код для входа в «Проблемы и показатели»: {code}\n'
-                'Введите его на открывшейся странице. Код действует 10 минут и только один раз.',
-                attachments,
-            )
-        if text == 'Показатели дома':
-            return await operator_metrics(conn, user, user_id, timestamp)
-        if text in {'Общие проблемы дома', 'Обновить сигналы'}:
-            return await operator_insights(conn, user, user_id, timestamp)
-        if text in {'Очередь дома', 'Обновить очередь'}:
-            return await operator_queue(conn, user, user_id, timestamp)
-        if text == '\u041e\u043a\u0440\u0443\u0433\u0430 \u0437\u0430\u044f\u0432\u043e\u043a':
-            cur = await conn.execute('SELECT district FROM operator_districts WHERE user_id=? ORDER BY district', (user['id'],))
-            values = [row['district'] for row in await cur.fetchall()]
-            return '\u0414\u043e\u0441\u0442\u0443\u043f\u043d\u044b\u0435 \u043e\u043a\u0440\u0443\u0433\u0430: ' + (', '.join(values) or '\u043e\u043a\u0440\u0443\u0433 \u043f\u0435\u0440\u0432\u0438\u0447\u043d\u043e\u0433\u043e \u0434\u043e\u043c\u0430')
-        if state == 'operator_insights' and text.startswith('Открыть сигнал '):
-            try:
-                index = int(text.removeprefix('Открыть сигнал ').strip()) - 1
-                ticket_ids = draft['groups'][index]
-            except (ValueError, IndexError, KeyError, TypeError):
-                return 'Сигнал не найден. Обновите список.', keyboard([['Общие проблемы дома']])
-            signal = await incident_signal_card(conn, user, ticket_ids)
-            if signal is None:
-                return 'Сигнал устарел. Обновите список.', keyboard([['Общие проблемы дома']])
-            _, card = signal
-            await save_dialog(conn, user_id, 'incident_confirm', {'ticket_ids': ticket_ids}, timestamp)
-            return card, keyboard([['Обычная срочность'], ['Срочно'], ['Авария'], ['Отмена']])
-        if state == 'incident_confirm':
-            priorities = {'Обычная срочность': 'normal', 'Срочно': 'urgent', 'Авария': 'emergency'}
-            priority = priorities.get(text)
-            if priority is None:
-                return 'Выберите срочность общего инцидента.', keyboard([
-                    ['Обычная срочность'], ['Срочно'], ['Авария'], ['Отмена'],
-                ])
-            announced = await announce_incident(conn, user, draft.get('ticket_ids', []), priority, timestamp)
+        legacy_state = state.startswith('operator_') or state == 'incident_confirm'
+        legacy_text = (
+            text in LEGACY_OPERATOR_COMMANDS
+            or text.startswith('Открыть сигнал ')
+            or text.startswith('Заявка #')
+        )
+        if text != 'Создать объявление' and (legacy_state or (legacy_text and not (state == 'announcement_confirm' and text == 'Отправить всем жильцам'))):
             await save_dialog(conn, user_id, 'idle', {}, timestamp)
-            if announced is None:
-                return 'Сигнал устарел и не был подтверждён.', keyboard([['Общие проблемы дома']])
-            incident_id, count = announced
-            return (
-                f'Общий инцидент #{incident_id[:8]} подтверждён. Связано обращений: {count}.',
-                keyboard([['Общие проблемы дома'], ['Очередь дома']]),
-            )
-        if text.startswith('Заявка #'):
-            prefix = text.removeprefix('Заявка #').strip()
-            if len(prefix) != 8 or not prefix.isalnum():
-                return 'Не удалось открыть заявку. Вернитесь в очередь.', keyboard([['Очередь дома']])
-            cursor = await conn.execute(
-                "SELECT t.*, COALESCE(hd.district, 'Округ не указан') AS district_label FROM tickets t LEFT JOIN house_districts hd ON hd.house_id=t.house_id WHERE t.id LIKE ? AND (t.house_id=? OR t.house_id IN (SELECT hd2.house_id FROM house_districts hd2 JOIN operator_districts od ON od.district=hd2.district WHERE od.user_id=?)) LIMIT 2",
-                (prefix + '%', user['house_id'], user['id']),
-            )
-            tickets = await cursor.fetchall()
-            if len(tickets) != 1:
-                return 'Заявка не найдена или идентификатор неоднозначен.', keyboard([['Очередь дома']])
-            ticket = tickets[0]
-            await save_dialog(conn, user_id, 'operator_ticket', {
-                'ticket_id': ticket['id'], 'status': ticket['status'],
-            }, timestamp)
-            return await operator_ticket_card(conn, ticket)
-        if state == 'operator_ticket':
-            if text == 'Ответить жителю':
-                await save_dialog(conn, user_id, 'operator_reply', draft, timestamp)
-                return 'Напишите ответ жителю.', keyboard([['Отмена']])
-            action = OPERATOR_ACTIONS.get(draft.get('status'))
-            if text == 'Изменить срочность':
-                await save_dialog(conn, user_id, 'operator_priority', draft, timestamp)
-                return 'Выберите приоритет. «Авария» — риск безопасности, воды или электроснабжения.', keyboard([
-                    ['Обычная срочность'], ['Срочно'], ['Авария'], ['Отмена'],
-                ])
-            if action and text == action[0]:
-                await save_dialog(conn, user_id, 'operator_comment', {
-                    **draft, 'target_status': action[1], 'action_label': action[0],
-                }, timestamp)
-                return f"{action[0]}. Напишите короткий комментарий для жителя.", keyboard([['Отмена']])
-        if state == 'operator_reply':
-            if not 3 <= len(text) <= 4000:
-                return 'Комментарий должен содержать от 3 до 4000 символов.', keyboard([['Отмена']])
-            cursor = await conn.execute(
-                'SELECT * FROM tickets WHERE id=? AND house_id=?',
-                (draft.get('ticket_id'), user['house_id']),
-            )
-            ticket = await cursor.fetchone()
-            if ticket is None:
-                return 'Заявка не найдена.', keyboard([['Очередь дома']])
-            await conn.execute(
-                'INSERT INTO events(ticket_id,actor_id,kind,status,text,created_at) VALUES(?,?,?,?,?,?)',
-                (ticket['id'], user['id'], 'comment', ticket['status'], text, timestamp),
-            )
-            await conn.execute(
-                'UPDATE tickets SET first_response_at=COALESCE(first_response_at,?),'
-                'updated_at=?,version=version+1 WHERE id=?',
-                (timestamp, timestamp, ticket['id']),
-            )
-            await notify_ticket_resident(
-                conn, ticket, f"Ответ УК по обращению №{ticket['id'][:8]}: {text}", timestamp,
-            )
-            cursor = await conn.execute('SELECT * FROM tickets WHERE id=?', (ticket['id'],))
-            updated = await cursor.fetchone()
-            await save_dialog(
-                conn, user_id, 'operator_ticket',
-                {'ticket_id': ticket['id'], 'status': updated['status']}, timestamp,
-            )
-            return await operator_ticket_card(conn, updated)
-        if state == 'operator_priority':
-            priorities = {'Обычная срочность': 'normal', 'Срочно': 'urgent', 'Авария': 'emergency'}
-            priority = priorities.get(text)
-            if priority is None:
-                return 'Выберите один из уровней срочности.', keyboard([
-                    ['Обычная срочность'], ['Срочно'], ['Авария'], ['Отмена'],
-                ])
-            cursor = await conn.execute('SELECT * FROM tickets WHERE id=? AND house_id=?',
-                                        (draft.get('ticket_id'), user['house_id']))
-            ticket = await cursor.fetchone()
-            if ticket is None:
-                return 'Заявка не найдена.', keyboard([['Очередь дома']])
-            await conn.execute(
-                'UPDATE tickets SET priority=?,due_at=?,first_response_at=COALESCE(first_response_at,?),'
-                'updated_at=?,version=version+1 WHERE id=?',
-                (priority, calculate_due_at(priority, ticket['created_at']), timestamp, timestamp, ticket['id']),
-            )
-            await conn.execute(
-                'INSERT INTO events(ticket_id,actor_id,kind,status,text,created_at) VALUES(?,?,?,?,?,?)',
-                (ticket['id'], user['id'], 'priority_changed', ticket['status'],
-                 f"Диспетчер установил приоритет: {PRIORITY_LABELS[priority]}.", timestamp),
-            )
-            cursor = await conn.execute('SELECT * FROM tickets WHERE id=?', (ticket['id'],))
-            updated = await cursor.fetchone()
-            await save_dialog(conn, user_id, 'operator_ticket', {'ticket_id': ticket['id'], 'status': updated['status']}, timestamp)
-            return await operator_ticket_card(conn, updated)
-        if state == 'operator_comment':
-            if not 3 <= len(text) <= 4000:
-                return 'Комментарий должен содержать от 3 до 4000 символов.', keyboard([['Отмена']])
-            cursor = await conn.execute('SELECT * FROM tickets WHERE id=? AND house_id=?',
-                                        (draft.get('ticket_id'), user['house_id']))
-            ticket = await cursor.fetchone()
-            expected_source = next(
-                (source for source, action in OPERATOR_ACTIONS.items() if action[1] == draft.get('target_status')
-                 and action[0] == draft.get('action_label')),
-                None,
-            )
-            if ticket is None or ticket['status'] != expected_source:
-                return 'Статус заявки уже изменился. Откройте её заново.', keyboard([['Очередь дома']])
-            target = draft['target_status']
-            await conn.execute('UPDATE tickets SET status=?,updated_at=?,version=version+1 WHERE id=?',
-                               (target, timestamp, ticket['id']))
-            if target == 'confirmed':
-                await conn.execute('UPDATE tickets SET closed_at=? WHERE id=?', (timestamp, ticket['id']))
-            await conn.execute('UPDATE tickets SET first_response_at=COALESCE(first_response_at,?) WHERE id=?',
-                               (timestamp, ticket['id']))
-            await conn.execute(
-                'INSERT INTO events(ticket_id,actor_id,kind,status,text,created_at) VALUES(?,?,?,?,?,?)',
-                (ticket['id'], user['id'], 'status_changed', target, text, timestamp),
-            )
-            label = STATUS_LABELS[target]
-            await notify_ticket_resident(
-                conn, ticket,
-                f"Обращение №{ticket['id'][:8]}: {label}.\nКомментарий УК: {text}",
-                timestamp, confirm=target == 'resolved',
-            )
+            reply, attachments = menu('operator')
+            return 'Работа с заявками и показателями перенесена в мини-приложение.\n\n' + reply, attachments
+        if text == 'Проблемы и показатели':
             await save_dialog(conn, user_id, 'idle', {}, timestamp)
-            return f"Заявка #{ticket['id'][:8]}: статус «{label}» сохранён.", keyboard([['Очередь дома']])
+            reply, attachments = menu('operator')
+            return 'Откройте мини-приложение кнопкой ниже.\n\n' + reply, attachments
         if text == 'Создать объявление':
             await save_dialog(conn, user_id, 'announcement_title', {}, timestamp)
             return 'Введите заголовок объявления (3-200 символов).', keyboard([['Назад']])
@@ -1252,7 +937,7 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
             body = draft.get('body', '')
             if not title or not body:
                 await save_dialog(conn, user_id, 'idle', {}, timestamp)
-                return 'Ошибка чтения данных. Начните снова.', keyboard([['Создать объявление'], ['Очередь дома']])
+                return 'Ошибка чтения данных. Начните снова.', menu('operator')[1]
             announcement_id = str(uuid4())
             msg_text = f'Объявление от УК\n\n{title}\n\n{body}'
             await conn.execute(
@@ -1274,9 +959,11 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
             await save_dialog(conn, user_id, 'idle', {}, timestamp)
             return (
                 f'Объявление отправлено {len(residents)} жильцам дома.',
-                keyboard([['Очередь дома'], ['Создать объявление']]),
+                menu('operator')[1],
             )
-        return 'Выберите действие из меню диспетчера.', keyboard([['Очередь дома'], ['Создать объявление']])
+        if state == 'announcement_confirm':
+            return 'Проверьте объявление: отправьте его жильцам или вернитесь к тексту.', keyboard([['Отправить всем жильцам'], ['Назад']])
+        return 'Выберите действие из меню диспетчера.', menu('operator')[1]
     if text.startswith('Обращение #'):
         prefix = text.removeprefix('Обращение #').strip()
         if len(prefix) != 8 or not prefix.isalnum():
