@@ -5,6 +5,8 @@ from pathlib import Path
 
 import aiosqlite
 
+from .addresses import canonical_house_address
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS houses (
  id TEXT PRIMARY KEY, address TEXT NOT NULL
@@ -71,6 +73,21 @@ CREATE TABLE IF NOT EXISTS ticket_attachments (
  created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ticket_attachments_ticket ON ticket_attachments(ticket_id, id);
+CREATE TABLE IF NOT EXISTS miniapp_login_codes (
+ code_hash TEXT PRIMARY KEY,
+ max_user_id INTEGER NOT NULL REFERENCES max_links(max_user_id),
+ expires_at TEXT NOT NULL,
+ used_at TEXT,
+ created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS miniapp_login_codes_user ON miniapp_login_codes(max_user_id, expires_at);
+CREATE TABLE IF NOT EXISTS miniapp_sessions (
+ token_hash TEXT PRIMARY KEY,
+ max_user_id INTEGER NOT NULL REFERENCES max_links(max_user_id),
+ expires_at TEXT NOT NULL,
+ created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS miniapp_sessions_user ON miniapp_sessions(max_user_id, expires_at);
 CREATE TABLE IF NOT EXISTS max_updates (
  fingerprint TEXT PRIMARY KEY,
  update_type TEXT NOT NULL,
@@ -215,6 +232,10 @@ class Database:
             for column, statement in TICKET_MIGRATIONS.items():
                 if column not in columns:
                     conn.execute(statement)
+            for house in conn.execute('SELECT id,address FROM houses').fetchall():
+                canonical = canonical_house_address(house['address'])
+                if canonical != house['address']:
+                    conn.execute('UPDATE houses SET address=? WHERE id=?', (canonical, house['id']))
 
     @contextmanager
     def connect(self, write=False):
@@ -251,6 +272,11 @@ class AsyncDatabase:
             for column, statement in TICKET_MIGRATIONS.items():
                 if column not in columns:
                     await conn.execute(statement)
+            houses = await (await conn.execute('SELECT id,address FROM houses')).fetchall()
+            for house in houses:
+                canonical = canonical_house_address(house['address'])
+                if canonical != house['address']:
+                    await conn.execute('UPDATE houses SET address=? WHERE id=?', (canonical, house['id']))
 
     @asynccontextmanager
     async def connect(self, write=False):

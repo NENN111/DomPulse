@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import hmac
 import json
@@ -16,6 +17,7 @@ from .access import MOSCOW_DISTRICTS, allowed_house_ids, can_access_house, distr
 from .sla import calculate_due_at, is_overdue
 from .residency import begin_verified_link, display_name, normalize_house_address
 from .geocoder import GeocoderError, geocode_address
+from .miniapp_login import issue_code
 
 MAX_WEBHOOK_BYTES = 256 * 1024
 
@@ -112,6 +114,17 @@ def keyboard(rows: list[list[str]]) -> list[dict[str, Any]]:
 
 
 async def queue_message(conn, user_id: int, text: str, attachments: list[dict[str, Any]], timestamp: str):
+    public_url = os.getenv('MINIAPP_PUBLIC_URL', '').strip()
+    if public_url.startswith('https://'):
+        attachments = copy.deepcopy(attachments)
+        for attachment in attachments:
+            if attachment.get('type') != 'inline_keyboard':
+                continue
+            for row in attachment.get('payload', {}).get('buttons', []):
+                for button in row:
+                    if button.get('type') == 'link' and button.get('url') == public_url:
+                        code = await issue_code(conn, user_id)
+                        button['url'] = f'{public_url}#login={code.replace("-", "")}'
     await conn.execute(
         'INSERT INTO max_outbox(max_user_id,text,attachments_json,next_attempt_at,created_at) '
         'VALUES(?,?,?,?,?)',
@@ -121,12 +134,18 @@ async def queue_message(conn, user_id: int, text: str, attachments: list[dict[st
 
 def menu(role: str = 'resident') -> tuple[str, list[dict[str, Any]]]:
     if role == 'operator':
+        app_button = {'type': 'open_app', 'text': 'Проблемы и показатели', 'web_app': os.getenv('MAX_BOT_USERNAME', '').strip()}
         return (
-            'ДомПульс: рабочее место диспетчера УК. Откройте очередь своего дома.',
-            keyboard([
-                ['Очередь дома'], ['Общие проблемы дома'], ['Показатели дома'],
-                ['Создать объявление'], ['Мой профиль и дом'], ['Информация об УК'],
-            ]),
+            'ДомПульс: рабочее место диспетчера УК. Откройте проблемы и показатели дома.',
+            [{
+                'type': 'inline_keyboard',
+                'payload': {'buttons': [
+                    [app_button],
+                    [{'type': 'message', 'text': 'Создать объявление'}],
+                    [{'type': 'message', 'text': 'Мой профиль и дом'}],
+                    [{'type': 'message', 'text': 'Информация об УК'}],
+                ]},
+            }],
         )
     return (
         'ДомПульс связывает жильца с управляющей компанией. Что хотите сделать?',
@@ -378,7 +397,7 @@ async def profile_and_house(conn, user_id: int):
     buttons = [['Информация об УК']]
     if profile['role'] == 'resident':
         buttons.extend([['Мои дома'], ['Сообщить о проблеме']])
-    buttons.append(['Меню'])
+    buttons.append(['Назад'])
     return '\n'.join(lines), keyboard(buttons)
 
 
@@ -426,7 +445,7 @@ async def operator_queue(conn, user, user_id: int, timestamp: str, district: str
     tickets = await cursor.fetchall()
     if not tickets:
         await save_dialog(conn, user_id, 'operator_select', {}, timestamp)
-        return 'В очереди нет активных обращений.', keyboard([['Обновить очередь'], ['Меню']])
+        return 'В очереди нет активных обращений.', keyboard([['Обновить очередь'], ['Назад']])
     lines = ['Очередь дома:']
     buttons = []
     for ticket in tickets:
@@ -437,7 +456,7 @@ async def operator_queue(conn, user, user_id: int, timestamp: str, district: str
             f"  {ticket['location']} — {ticket['description'][:70]}"
         )
         buttons.append([f'Заявка #{prefix}'])
-    buttons.extend([['Обновить очередь'], ['Меню']])
+    buttons.extend([['Обновить очередь'], ['Назад']])
     await save_dialog(conn, user_id, 'operator_select', {}, timestamp)
     return '\n'.join(lines), keyboard(buttons)
 
@@ -920,6 +939,15 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
     if payload['update_type'] == 'bot_started' or text.lower() in {'/start', 'меню'}:
         await save_dialog(conn, user_id, 'idle', {}, timestamp)
         return menu(user['role'])
+    if text == 'Назад':
+        if user['role'] == 'operator' and state == 'announcement_confirm':
+            await save_dialog(conn, user_id, 'announcement_body', {'title': draft.get('title', '')}, timestamp)
+            return 'Теперь напишите текст объявления. Опишите все подробности.', keyboard([['Назад']])
+        if user['role'] == 'operator' and state == 'announcement_body':
+            await save_dialog(conn, user_id, 'announcement_title', {}, timestamp)
+            return 'Введите заголовок объявления (3-200 символов).', keyboard([['Назад']])
+        await save_dialog(conn, user_id, 'idle', {}, timestamp)
+        return menu(user['role'])
     if text == 'Отмена':
         await save_dialog(conn, user_id, 'idle', {}, timestamp)
         reply, attachments = menu(user['role'])
@@ -1039,6 +1067,14 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
         await save_dialog(conn, user_id, 'idle', {}, timestamp)
         return await profile_and_house(conn, user_id)
     if user['role'] == 'operator':
+        if text == 'Код входа':
+            code = await issue_code(conn, user_id)
+            _, attachments = menu('operator')
+            return (
+                f'Код для входа в «Проблемы и показатели»: {code}\n'
+                'Введите его на открывшейся странице. Код действует 10 минут и только один раз.',
+                attachments,
+            )
         if text == 'Показатели дома':
             return await operator_metrics(conn, user, user_id, timestamp)
         if text in {'Общие проблемы дома', 'Обновить сигналы'}:
@@ -1197,20 +1233,20 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
             return f"Заявка #{ticket['id'][:8]}: статус «{label}» сохранён.", keyboard([['Очередь дома']])
         if text == 'Создать объявление':
             await save_dialog(conn, user_id, 'announcement_title', {}, timestamp)
-            return 'Введите заголовок объявления (3-200 символов).', keyboard([['Отмена']])
+            return 'Введите заголовок объявления (3-200 символов).', keyboard([['Назад']])
         if state == 'announcement_title':
             if not 3 <= len(text) <= 200:
-                return 'Заголовок должен содержать от 3 до 200 символов.', keyboard([['Отмена']])
+                return 'Заголовок должен содержать от 3 до 200 символов.', keyboard([['Назад']])
             await save_dialog(conn, user_id, 'announcement_body', {'title': text}, timestamp)
-            return 'Теперь напишите текст объявления. Опишите все подробности.', keyboard([['Отмена']])
+            return 'Теперь напишите текст объявления. Опишите все подробности.', keyboard([['Назад']])
         if state == 'announcement_body':
             if not 5 <= len(text) <= 4000:
-                return 'Текст должен содержать от 5 до 4000 символов.', keyboard([['Отмена']])
+                return 'Текст должен содержать от 5 до 4000 символов.', keyboard([['Назад']])
             await save_dialog(conn, user_id, 'announcement_confirm', {**draft, 'body': text}, timestamp)
             return (
                 f"Проверьте объявление перед отправкой:\n\n"
                 f"{draft.get('title', '')}\n{text}"
-            ), keyboard([['Отправить всем жильцам'], ['Отмена']])
+            ), keyboard([['Отправить всем жильцам'], ['Назад']])
         if state == 'announcement_confirm' and text == 'Отправить всем жильцам':
             title = draft.get('title', '')
             body = draft.get('body', '')

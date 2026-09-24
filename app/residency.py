@@ -4,19 +4,17 @@ import hashlib
 import hmac
 import json
 import os
-import re
 import secrets
 from datetime import datetime, timedelta
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from .addresses import address_key
 from .db import token_hash
 
 
 def normalize_house_address(value: str) -> str:
     """Нормализует адрес для строгого сопоставления с известным домом."""
-    normalized = value.casefold().replace('ё', 'е')
-    normalized = re.sub(r'[.,;:]+', ' ', normalized)
-    return re.sub(r'\s+', ' ', normalized).strip()
+    return address_key(value)
 
 
 def integration_enabled() -> bool:

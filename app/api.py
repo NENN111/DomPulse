@@ -4,16 +4,22 @@ import json
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .db import AsyncDatabase, token_hash
 from .models import AnnouncementCreate, Announcement, CommentCreate, GosuslugiResidencyClaim, Profile, StatusChange, Ticket, TicketCreate, TicketDetail
 from .analytics import house_metrics
 from .access import allowed_house_ids, can_access_house
-from .max_webhook import keyboard, parse_update, queue_message, save_dialog, store_update, verify_secret
+from .max_webhook import PRIORITY_LABELS, announce_incident, keyboard, parse_update, queue_message, save_dialog, similar_groups, store_update, verify_secret
+from .miniapp_auth import InvalidLaunchData, validate_launch_data
+from .miniapp_login import redeem_code, session_user_id
 from .sla import calculate_due_at
 from .residency import complete_verified_link
 
@@ -25,6 +31,21 @@ OPERATOR_TRANSITIONS = {
     'reopened': {'in_progress'},
 }
 RESIDENT_TRANSITIONS = {'resolved': {'confirmed', 'reopened'}}
+WEB_DIR = Path(__file__).resolve().parent.parent / 'web'
+
+
+class MiniappLogin(BaseModel):
+    code: str
+
+
+class PriorityChange(BaseModel):
+    priority: str
+    expected_version: int
+
+
+class IncidentConfirm(BaseModel):
+    ticket_ids: list[str]
+    priority: str
 
 
 def now():
@@ -59,7 +80,32 @@ def create_app(db_path: str | None = None):
     )
     auth = HTTPBearer(auto_error=False)
 
-    async def actor(credentials: HTTPAuthorizationCredentials | None = Depends(auth)):
+    async def actor(
+        credentials: HTTPAuthorizationCredentials | None = Depends(auth),
+        x_max_init_data: str | None = Header(default=None),
+        x_miniapp_session: str | None = Header(default=None),
+    ):
+        max_user_id = None
+        if x_max_init_data is not None:
+            try:
+                max_user_id = validate_launch_data(x_max_init_data, os.getenv('MAX_BOT_TOKEN', ''))
+            except InvalidLaunchData as exc:
+                raise HTTPException(401, str(exc)) from exc
+        elif x_miniapp_session is not None:
+            max_user_id = await session_user_id(db, x_miniapp_session)
+            if max_user_id is None:
+                raise HTTPException(401, 'Срок входа истёк. Запросите новый код в боте.')
+        if max_user_id is not None:
+            async with db.connect() as conn:
+                cursor = await conn.execute(
+                    'SELECT u.id,u.name,u.role,u.house_id,h.address FROM max_links l '
+                    'JOIN users u ON u.id=l.user_id JOIN houses h ON h.id=u.house_id '
+                    'WHERE l.max_user_id=?', (max_user_id,),
+                )
+                row = await cursor.fetchone()
+            if row is None or row['role'] != 'operator':
+                raise HTTPException(403, 'Доступно только сотруднику УК')
+            return dict(row)
         if credentials is None:
             raise HTTPException(401, 'Требуется авторизация', headers={'WWW-Authenticate': 'Bearer'})
         async with db.connect() as conn:
@@ -150,6 +196,12 @@ def create_app(db_path: str | None = None):
             await cursor.fetchone()
         return {'status': 'ok', 'max_configured': True}
 
+    @app.get('/miniapp', include_in_schema=False)
+    async def miniapp_page():
+        return FileResponse(WEB_DIR / 'index.html', headers={'Cache-Control': 'no-store'})
+
+    app.mount('/miniapp/assets', StaticFiles(directory=WEB_DIR), name='miniapp-assets')
+
     @app.post('/webhooks/max')
     async def max_webhook(
         request: Request,
@@ -172,6 +224,107 @@ def create_app(db_path: str | None = None):
             result = await house_metrics(conn, house_ids=await allowed_house_ids(conn, user))
         result.pop('tickets')
         return result
+
+    @app.post('/api/miniapp/login')
+    async def miniapp_login(body: MiniappLogin, response: Response):
+        response.headers['Cache-Control'] = 'no-store'
+        if len(body.code) > 32:
+            raise HTTPException(401, 'Код недействителен или истёк')
+        result = await redeem_code(db, body.code)
+        if result is None:
+            raise HTTPException(401, 'Код недействителен или истёк')
+        token, expires_at = result
+        return {'token': token, 'expires_at': expires_at}
+
+    @app.get('/api/miniapp/overview')
+    async def miniapp_overview(house_id: str | None = None, user=Depends(actor)):
+        if user['role'] != 'operator':
+            raise HTTPException(403, 'Доступно только сотруднику УК')
+        async with db.connect() as conn:
+            ids = await allowed_house_ids(conn, user)
+            selected = house_id or user['house_id']
+            if selected not in ids:
+                raise HTTPException(404, 'Дом не найден')
+            marks = ','.join('?' for _ in ids)
+            rows = await (await conn.execute(
+                f'SELECT id,address FROM houses WHERE id IN ({marks}) ORDER BY address', ids,
+            )).fetchall()
+            metrics = await house_metrics(conn, house_id=selected)
+            tickets = metrics.pop('tickets')
+            tickets.sort(key=lambda ticket: ticket['created_at'], reverse=True)
+            linked = await (await conn.execute(
+                'SELECT ticket_id FROM incident_tickets WHERE ticket_id IN '
+                '(SELECT id FROM tickets WHERE house_id=?)', (selected,),
+            )).fetchall()
+            linked_ids = {row['ticket_id'] for row in linked}
+            groups = similar_groups([
+                ticket for ticket in tickets
+                if ticket['status'] != 'confirmed' and ticket['id'] not in linked_ids
+            ])
+            signals = [{
+                'ticket_ids': [ticket['id'] for ticket in group],
+                'category': group[0]['category'], 'location': group[0]['location'],
+                'count': len(group), 'description': group[0]['description'],
+            } for group in groups]
+            announcements = await (await conn.execute(
+                'SELECT id,title,created_at FROM announcements WHERE house_id=? '
+                'ORDER BY created_at DESC LIMIT 3', (selected,),
+            )).fetchall()
+            return {
+                'operator': {'name': user['name']}, 'houses': [dict(row) for row in rows],
+                'house_id': selected, 'metrics': metrics, 'tickets': tickets,
+                'signals': signals, 'announcements': [dict(row) for row in announcements],
+            }
+
+    @app.post('/api/miniapp/tickets/{ticket_id}/priority')
+    async def miniapp_priority(ticket_id: str, body: PriorityChange, user=Depends(actor)):
+        if user['role'] != 'operator':
+            raise HTTPException(403, 'Доступно только сотруднику УК')
+        if body.priority not in {'normal', 'urgent', 'emergency'}:
+            raise HTTPException(422, 'Недопустимая срочность')
+        async with db.connect(write=True) as conn:
+            ticket = await accessible(conn, ticket_id, user)
+            if ticket['version'] != body.expected_version:
+                raise HTTPException(409, 'Карточка изменилась. Обновите её.')
+            timestamp = now()
+            await conn.execute(
+                'UPDATE tickets SET priority=?,due_at=?,first_response_at=COALESCE(first_response_at,?),updated_at=?,version=version+1 WHERE id=?',
+                (body.priority, calculate_due_at(body.priority, ticket['created_at']), timestamp, timestamp, ticket_id),
+            )
+            await event(conn, ticket_id, user, 'priority_changed', ticket['status'],
+                        f'Диспетчер установил приоритет: {PRIORITY_LABELS[body.priority]}.', timestamp)
+            return await detail(conn, await accessible(conn, ticket_id, user))
+
+    @app.post('/api/miniapp/incidents')
+    async def miniapp_confirm_incident(body: IncidentConfirm, house_id: str, user=Depends(actor)):
+        if user['role'] != 'operator':
+            raise HTTPException(403, 'Доступно только сотруднику УК')
+        if body.priority not in {'normal', 'urgent', 'emergency'} or not 2 <= len(body.ticket_ids) <= 20:
+            raise HTTPException(422, 'Недопустимые параметры сигнала')
+        if len(set(body.ticket_ids)) != len(body.ticket_ids):
+            raise HTTPException(422, 'Повторяющиеся обращения')
+        async with db.connect(write=True) as conn:
+            if not await can_access_house(conn, user, house_id):
+                raise HTTPException(404, 'Дом не найден')
+            marks = ','.join('?' for _ in body.ticket_ids)
+            tickets = await (await conn.execute(
+                f'SELECT * FROM tickets WHERE id IN ({marks})', body.ticket_ids,
+            )).fetchall()
+            if len(tickets) != len(body.ticket_ids) or any(ticket['house_id'] != house_id for ticket in tickets):
+                raise HTTPException(404, 'Сигнал не найден')
+            linked = await (await conn.execute(
+                f'SELECT 1 FROM incident_tickets WHERE ticket_id IN ({marks}) LIMIT 1',
+                body.ticket_ids,
+            )).fetchone()
+            if linked or any(ticket['status'] == 'confirmed' for ticket in tickets):
+                raise HTTPException(409, 'Сигнал уже обработан')
+            if not any(len(group) == len(tickets) for group in similar_groups([dict(row) for row in tickets])):
+                raise HTTPException(409, 'Обращения больше не похожи')
+            selected_user = {**user, 'house_id': house_id}
+            result = await announce_incident(conn, selected_user, body.ticket_ids, body.priority, now())
+            if result is None:
+                raise HTTPException(409, 'Сигнал устарел')
+            return {'id': result[0], 'count': result[1]}
 
     @app.post('/api/tickets', response_model=TicketDetail, status_code=201)
     async def create_ticket(body: TicketCreate, user=Depends(actor)):

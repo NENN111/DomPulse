@@ -31,7 +31,7 @@ def load_env(path: Path):
     if not path.exists():
         return
     allowed = {
-        'DOMPULSE_DB', 'MAX_BOT_TOKEN', 'MAX_API_BASE',
+        'DOMPULSE_DB', 'MAX_BOT_TOKEN', 'MAX_BOT_USERNAME', 'MAX_API_BASE', 'MINIAPP_PUBLIC_URL',
         'GOSUSLUGI_BRIDGE_URL', 'GOSUSLUGI_BRIDGE_SECRET',
         'YANDEX_MAPS_API_KEY', 'YANDEX_GEOCODER_URL', 'YANDEX_MAPS_ALLOW_STORAGE',
         'SSL_CERT_FILE', 'SSL_CERT_DIR',

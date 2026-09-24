@@ -13,6 +13,25 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def without_unavailable_app(attachments: list[dict]) -> list[dict] | None:
+    """Keep the menu usable while MAX has no Mini App URL for the bot."""
+    changed = False
+    fallback = []
+    for attachment in attachments:
+        if attachment.get('type') != 'inline_keyboard':
+            fallback.append(attachment)
+            continue
+        payload = attachment.get('payload', {})
+        rows = []
+        for row in payload.get('buttons', []):
+            buttons = [button for button in row if button.get('type') != 'open_app']
+            changed |= len(buttons) != len(row)
+            if buttons:
+                rows.append(buttons)
+        fallback.append({**attachment, 'payload': {**payload, 'buttons': rows}})
+    return fallback if changed else None
+
+
 async def deliver_one(db: AsyncDatabase, client: MaxClient) -> bool:
     now = utc_now()
     async with db.connect(write=True) as conn:
@@ -30,10 +49,18 @@ async def deliver_one(db: AsyncDatabase, client: MaxClient) -> bool:
             (message['id'],),
         )
 
+    attachments = json.loads(message['attachments_json'])
+    delivered_text = message['text']
     try:
-        mid = await client.send_message(
-            message['max_user_id'], message['text'], json.loads(message['attachments_json'])
-        )
+        try:
+            mid = await client.send_message(message['max_user_id'], delivered_text, attachments)
+        except MaxAPIError as exc:
+            fallback = without_unavailable_app(attachments)
+            if 'MAX /messages: HTTP 400' not in str(exc) or fallback is None:
+                raise
+            delivered_text += '\n\nМини-приложение пока не подключено в настройках MAX.'
+            attachments = fallback
+            mid = await client.send_message(message['max_user_id'], delivered_text, attachments)
     except MaxAPIError as exc:
         delay_seconds = min(300, 2 ** min(message['attempts'] + 1, 8))
         retry_at = (datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)).isoformat()
@@ -46,8 +73,8 @@ async def deliver_one(db: AsyncDatabase, client: MaxClient) -> bool:
 
     async with db.connect(write=True) as conn:
         await conn.execute(
-            "UPDATE max_outbox SET status='sent',max_mid=?,sent_at=? WHERE id=?",
-            (mid, utc_now(), message['id']),
+            "UPDATE max_outbox SET status='sent',max_mid=?,sent_at=?,text=?,attachments_json=? WHERE id=?",
+            (mid, utc_now(), delivered_text, json.dumps(attachments, ensure_ascii=False), message['id']),
         )
     return True
 

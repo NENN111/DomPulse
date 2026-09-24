@@ -22,6 +22,7 @@ from app.sla import scan_overdue
 def max_app(tmp_path, monkeypatch):
     path = str(tmp_path / 'max.db')
     monkeypatch.setenv('MAX_WEBHOOK_SECRET', 'test-webhook-secret')
+    monkeypatch.setenv('MAX_BOT_USERNAME', 'test_bot')
     with TestClient(create_app(path)) as client:
         yield client, Database(path)
 
@@ -118,6 +119,16 @@ def test_profile_shows_house_district_and_link_method(max_app):
     assert 'Способ привязки: одноразовый код управляющей компании' in reply['text']
     buttons = json.loads(reply['attachments_json'])[0]['payload']['buttons']
     assert {'type': 'message', 'text': 'Сообщить о проблеме'} in [button for row in buttons for button in row]
+    assert buttons[-1] == [{'type': 'message', 'text': 'Назад'}]
+
+    back = client.post('/webhooks/max', headers=headers,
+                       json=update('profile-back', 'Назад', 1452))
+    assert back.status_code == 200
+    with db.connect() as conn:
+        menu_reply = conn.execute(
+            'SELECT text FROM max_outbox WHERE max_user_id=? ORDER BY id DESC LIMIT 1', (1452,),
+        ).fetchone()['text']
+    assert 'Что хотите сделать?' in menu_reply
 
 
 def test_photo_is_kept_when_sent_before_category(max_app):
@@ -542,6 +553,34 @@ def test_outbox_marks_success(tmp_path):
     assert row['attempts'] == 1 and len(fake.calls) == 1
 
 
+def test_outbox_delivers_navigation_when_max_rejects_open_app(tmp_path):
+    db = queued_db(tmp_path)
+    buttons = [[{'type': 'open_app', 'text': 'Проблемы и показатели'}],
+               [{'type': 'message', 'text': 'Создать объявление'}]]
+    attachments = [{'type': 'inline_keyboard', 'payload': {'buttons': buttons}}]
+    with Database(db.path).connect(write=True) as conn:
+        conn.execute('UPDATE max_outbox SET attachments_json=?',
+                     (json.dumps(attachments, ensure_ascii=False),))
+
+    class RejectUnconfiguredApp(FakeMaxClient):
+        async def send_message(self, user_id, text, attachments):
+            if any(button['type'] == 'open_app'
+                   for item in attachments for row in item['payload']['buttons']
+                   for button in row):
+                self.calls.append((user_id, text, attachments))
+                raise MaxAPIError('MAX /messages: HTTP 400', retryable=False)
+            return await super().send_message(user_id, text, attachments)
+
+    fake = RejectUnconfiguredApp()
+    assert asyncio.run(deliver_one(db, fake)) is True
+    with Database(db.path).connect() as conn:
+        row = dict(conn.execute('SELECT * FROM max_outbox').fetchone())
+    assert row['status'] == 'sent'
+    assert len(fake.calls) == 2
+    assert json.loads(row['attachments_json'])[0]['payload']['buttons'] == [buttons[1]]
+    assert 'Мини-приложение пока не подключено' in row['text']
+
+
 def test_outbox_schedules_retry(tmp_path):
     db = queued_db(tmp_path)
     assert asyncio.run(deliver_one(db, FakeMaxClient(fail=True))) is True
@@ -704,7 +743,7 @@ def test_manual_address_requires_matching_house_code(max_app):
 
     for mid, text in [
         ('manual-select-correct', 'Ввести адрес вручную'),
-        ('manual-address', 'Москва, улица Лесная, дом 10'),
+        ('manual-address', 'УЛИЦА ЛЕСНАЯ 10'),
         ('manual-code', '/код MANUAL-OK-CODE-1'),
     ]:
         response = client.post('/webhooks/max', headers=headers, json=update(mid, text, 1401))
@@ -833,7 +872,7 @@ def test_gosuslugi_bridge_links_active_temporary_registration(tmp_path, monkeypa
             'subject_id': 'esia-subject-1501',
             'registrations': [
                 {'type': 'permanent', 'house_address': 'Москва, улица Постоянная, дом 1'},
-                {'type': 'temporary', 'house_address': 'Москва, улица Временная, дом 2',
+                {'type': 'temporary', 'house_address': 'УЛИЦА ВРЕМЕННАЯ 2',
                  'valid_until': '2099-12-31'},
             ],
         }
@@ -945,3 +984,64 @@ def test_resident_can_get_management_company_info(max_app):
     buttons = json.loads(notice['attachments_json'])[0]['payload']['buttons']
     assert buttons[0][0]['text'] == 'Сообщить о проблеме'
     assert buttons[2][0]['text'] == 'Информация об УК'
+
+
+def test_operator_back_navigation_for_queue_and_announcement(max_app):
+    client, db = max_app
+    headers = {'X-Max-Bot-Api-Secret': 'test-webhook-secret'}
+    enroll(client, db, headers, 9911, role='operator')
+
+    def send(mid, text):
+        response = client.post('/webhooks/max', headers=headers, json=update(mid, text, user_id=9911))
+        assert response.status_code == 200
+        with db.connect() as conn:
+            row = conn.execute(
+                'SELECT text,attachments_json FROM max_outbox WHERE max_user_id=9911 ORDER BY id DESC LIMIT 1'
+            ).fetchone()
+        return row['text'], json.loads(row['attachments_json'])[0]['payload']['buttons']
+
+    text, buttons = send('nav-title', 'Создать объявление')
+    assert 'Введите заголовок' in text
+    assert buttons == [[{'type': 'message', 'text': 'Назад'}]]
+
+    text, buttons = send('nav-body', 'Проверочное объявление')
+    assert 'Теперь напишите текст' in text
+    assert buttons == [[{'type': 'message', 'text': 'Назад'}]]
+
+    text, _ = send('nav-body-back', 'Назад')
+    assert 'Введите заголовок' in text
+    text, buttons = send('nav-title-back', 'Назад')
+    assert 'проблемы и показатели' in text
+    assert buttons[0][0]['type'] == 'open_app'
+
+    text, buttons = send('nav-profile', 'Мой профиль и дом')
+    assert 'Роль: диспетчер УК' in text
+    assert buttons[-1] == [{'type': 'message', 'text': 'Назад'}]
+    text, buttons = send('nav-profile-back', 'Назад')
+    assert 'проблемы и показатели' in text
+
+    text, buttons = send('nav-queue', 'Очередь дома')
+    assert 'В очереди нет' in text
+    assert buttons[-1] == [{'type': 'message', 'text': 'Назад'}]
+    text, buttons = send('nav-queue-back', 'Назад')
+    assert 'проблемы и показатели' in text
+    assert buttons[0][0]['type'] == 'open_app'
+
+
+
+def test_operator_menu_opens_registered_miniapp(max_app, monkeypatch):
+    client, db = max_app
+    monkeypatch.setenv('MINIAPP_PUBLIC_URL', 'https://example.test/miniapp')
+    headers = {'X-Max-Bot-Api-Secret': 'test-webhook-secret'}
+    enroll(client, db, headers, 9912, role='operator')
+
+    response = client.post('/webhooks/max', headers=headers,
+                           json=update('app-menu', 'Меню', user_id=9912))
+    assert response.status_code == 200
+    with db.connect() as conn:
+        row = conn.execute('SELECT attachments_json FROM max_outbox WHERE max_user_id=9912 '
+                           'ORDER BY id DESC LIMIT 1').fetchone()
+    buttons = json.loads(row['attachments_json'])[0]['payload']['buttons']
+    assert buttons[0][0] == {'type': 'open_app', 'text': 'Проблемы и показатели', 'web_app': 'test_bot'}
+    assert all(button['type'] != 'link' for row in buttons for button in row)
+    assert all(button['text'] != 'Код входа' for row in buttons for button in row)
