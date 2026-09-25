@@ -70,6 +70,7 @@ async function load(announce=false) {
     showApp();
     $('#operator-name').textContent=data.operator.name+(preview?' · просмотр макета':'');
     $('#house-select').innerHTML=data.houses.map(h=>`<option value="${esc(h.id)}" ${h.id===data.house_id?'selected':''}>${esc(h.address)}</option>`).join('');
+    syncMobileSelect(document.getElementById("house-select"));
     render();
     if(announce) notify(preview?'Демонстрационные данные обновлены':'Данные обновлены',true);
   } catch(err) { notify(err.message); $('#operator-name').textContent='Данные недоступны'; }
@@ -101,6 +102,7 @@ function renderQueue() {
 }
 function renderSignals() {
   $('#signal-list').innerHTML=data.signals.length ? data.signals.map((s,i)=>`<article class="signal-card"><div><div class="signal-count">${s.count} похожих обращения · сигнал ${i+1}</div><h3>${esc(CATEGORIES[s.category]||s.category)} · ${esc(s.location)}</h3><p>${esc(s.description)}</p></div><div><select class="signal-priority" data-index="${i}" aria-label="Срочность общего инцидента"><option value="normal">Обычная</option><option value="urgent">Срочно</option><option value="emergency">Авария</option></select> <button class="secondary-button confirm-signal" data-index="${i}">Подтвердить</button></div></article>`).join('') : '<div class="empty"><strong>Общих сигналов пока нет</strong>Когда появятся похожие обращения, они будут здесь.</div>';
+  enhanceMobileSelects(document.getElementById("signal-list"));
 }
 function metricCard(label,value,hint,percent,kind='') { return `<div class="surface metric-card ${kind}"><span class="label">${label}</span><strong>${value}</strong><span class="hint">${hint}</span><div class="mini-bar" aria-hidden="true"><i style="width:${Math.min(100,Math.max(0,percent))}%"></i></div></div>`; }
 function chartRows(items, translate=x=>x) { const max=Math.max(1,...items.map(x=>x[1])); return items.length ? items.map(([name,count])=>`<div class="chart-row"><span>${esc(translate(name))}</span><div class="bar-track" aria-hidden="true"><i style="width:${100*count/max}%"></i></div><strong>${count}</strong></div>`).join('') : '<p class="section-description">Данных пока нет.</p>'; }
@@ -134,6 +136,7 @@ function renderDrawer() {
   const t=selectedTicket, next=NEXT[t.status];
   $('#drawer-title').textContent='Заявка №'+t.id.slice(0,8);
   $('#drawer-content').innerHTML=`<div class="detail-line"><span>Статус</span><b>${esc(STATUSES[t.status]||t.status)}</b></div><div class="detail-line"><span>Категория</span><b>${esc(CATEGORIES[t.category]||t.category)}</b></div><div class="detail-line"><span>Место</span><b>${esc(t.location)}</b></div><div class="detail-line"><span>Создана</span><b>${fmtDate(t.created_at)}</b></div><div class="detail-line"><span>Первый ответ</span><b>${fmtDate(t.first_response_at)}</b></div><div class="detail-description">${esc(t.description)}</div><div class="form-block"><h3>Срочность</h3><select id="priority-select"><option value="normal" ${t.priority==='normal'?'selected':''}>Обычная</option><option value="urgent" ${t.priority==='urgent'?'selected':''}>Срочно</option><option value="emergency" ${t.priority==='emergency'?'selected':''}>Авария</option></select><button id="save-priority" class="secondary-button">Сохранить срочность</button></div><div class="form-block"><h3>Ответ жителю</h3><textarea id="reply-text" maxlength="4000" placeholder="Напишите ответ по заявке"></textarea><button id="send-reply" class="primary-button">Отправить ответ</button></div>${next?`<div class="form-block"><h3>Следующий этап</h3><textarea id="status-comment" maxlength="4000" placeholder="Короткий комментарий для жителя"></textarea><button id="change-status" class="secondary-button">${next[1]}</button></div>`:''}<div class="form-block"><h3>История</h3><ul class="event-list">${t.events.length?t.events.map(e=>`<li><b>${esc(e.actor_name)}</b>: ${esc(e.text)}<small>${fmtDate(e.created_at)}</small></li>`).join(''):'<li>История действий пока пуста.</li>'}</ul></div>`;
+  enhanceMobileSelects(document.getElementById("drawer-content"));
 }
 async function mutate(path,payload) {
   if(preview){notify('В режиме просмотра действия недоступны');return;}
@@ -166,3 +169,89 @@ async function bootstrap() {
   await load();
 }
 bootstrap();
+let mobileSelect = null;
+const selectSheet = document.createElement('div');
+selectSheet.className = 'select-sheet';
+selectSheet.hidden = true;
+selectSheet.innerHTML = '<div class="select-sheet-backdrop"></div><div class="select-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="select-sheet-title"><div class="select-sheet-header"><h2 id="select-sheet-title"></h2><button class="select-sheet-close" type="button" aria-label="Закрыть список">×</button></div><div class="select-sheet-options"></div></div>';
+document.body.append(selectSheet);
+function selectTitle(select) {
+  const label = select.id && document.querySelector('label[for="' + select.id + '"]');
+  return select.getAttribute('aria-label') || label?.textContent || 'Выберите значение';
+}
+function syncMobileSelect(select) {
+  const trigger = select.nextElementSibling;
+  if (!trigger?.classList.contains('mobile-select-trigger')) return;
+  trigger.querySelector('span').textContent = select.selectedOptions[0]?.textContent || selectTitle(select);
+  trigger.disabled = select.disabled || !select.options.length;
+}
+function closeMobileSelect() {
+  if (!mobileSelect) return;
+  const trigger = mobileSelect.nextElementSibling;
+  selectSheet.hidden = true;
+  document.body.classList.remove('select-sheet-open');
+  mobileSelect = null;
+  if (trigger?.isConnected) {
+    trigger.setAttribute('aria-expanded', 'false');
+    trigger.focus({preventScroll: true});
+  }
+}
+function openMobileSelect(select) {
+  if (mobileSelect) closeMobileSelect();
+  mobileSelect = select;
+  const trigger = select.nextElementSibling;
+  document.getElementById('select-sheet-title').textContent = selectTitle(select);
+  const options = selectSheet.querySelector('.select-sheet-options');
+  options.replaceChildren(...Array.from(select.options, (option, index) => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'select-sheet-option';
+    item.textContent = option.textContent;
+    item.dataset.index = index;
+    item.disabled = option.disabled;
+    item.setAttribute('aria-current', String(option.selected));
+    return item;
+  }));
+  selectSheet.hidden = false;
+  document.body.classList.add('select-sheet-open');
+  trigger.setAttribute('aria-expanded', 'true');
+  (options.querySelector('[aria-current="true"]') || options.querySelector('button'))?.focus({preventScroll: true});
+}
+function enhanceMobileSelects(root = document) {
+  root.querySelectorAll('select:not([data-mobile-enhanced])').forEach(select => {
+    select.dataset.mobileEnhanced = 'true';
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'mobile-select-trigger';
+    trigger.setAttribute('aria-label', selectTitle(select));
+    trigger.setAttribute('aria-haspopup', 'dialog');
+    trigger.setAttribute('aria-expanded', 'false');
+    trigger.innerHTML = '<span></span><i aria-hidden="true"></i>';
+    select.after(trigger);
+    trigger.addEventListener('click', () => openMobileSelect(select));
+    select.addEventListener('change', () => syncMobileSelect(select));
+    syncMobileSelect(select);
+  });
+}
+selectSheet.addEventListener('click', event => {
+  if (event.target.closest('.select-sheet-backdrop, .select-sheet-close')) return closeMobileSelect();
+  const option = event.target.closest('.select-sheet-option');
+  if (!option || !mobileSelect) return;
+  const select = mobileSelect;
+  const value = select.options[Number(option.dataset.index)]?.value;
+  closeMobileSelect();
+  if (value !== undefined && select.value !== value) {
+    select.value = value;
+    select.dispatchEvent(new Event('change', {bubbles: true}));
+  }
+});
+selectSheet.addEventListener('keydown', event => {
+  if (event.key === 'Escape') { event.stopPropagation(); closeMobileSelect(); }
+  if (event.key === 'Tab') {
+    const focusable = Array.from(selectSheet.querySelectorAll('button:not(:disabled)'));
+    const first = focusable[0], last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  }
+});
+enhanceMobileSelects();

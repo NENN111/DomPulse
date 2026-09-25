@@ -4,11 +4,9 @@ import json
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from pathlib import Path
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -19,6 +17,7 @@ from .analytics import house_metrics
 from .access import allowed_house_ids, can_access_house
 from .max_webhook import PRIORITY_LABELS, announce_incident, keyboard, parse_update, queue_message, save_dialog, similar_groups, store_update, verify_secret
 from .miniapp_auth import InvalidLaunchData, validate_launch_data
+from .miniapp_document import WEB_DIR, miniapp_response
 from .miniapp_login import redeem_code, session_user_id
 from .sla import calculate_due_at
 from .residency import complete_verified_link
@@ -31,7 +30,6 @@ OPERATOR_TRANSITIONS = {
     'reopened': {'in_progress'},
 }
 RESIDENT_TRANSITIONS = {'resolved': {'confirmed', 'reopened'}}
-WEB_DIR = Path(__file__).resolve().parent.parent / 'web'
 
 
 class MiniappLogin(BaseModel):
@@ -198,7 +196,7 @@ def create_app(db_path: str | None = None):
 
     @app.get('/miniapp', include_in_schema=False)
     async def miniapp_page():
-        return FileResponse(WEB_DIR / 'index.html', headers={'Cache-Control': 'no-store'})
+        return miniapp_response()
 
     app.mount('/miniapp/assets', StaticFiles(directory=WEB_DIR), name='miniapp-assets')
 

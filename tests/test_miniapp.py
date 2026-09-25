@@ -99,7 +99,11 @@ def test_public_entry_exposes_only_signed_miniapp_routes(tmp_path, monkeypatch):
     monkeypatch.setenv('MAX_WEBHOOK_SECRET', 'test-webhook-secret')
     monkeypatch.setenv('MAX_BOT_TOKEN', TOKEN)
     with TestClient(create_public_app()) as client:
-        assert client.get('/miniapp').status_code == 200
+        page = client.get('/miniapp')
+        assert page.status_code == 200
+        assert '<style>' in page.text
+        assert 'document.addEventListener("DOMContentLoaded"' in page.text
+        assert '/miniapp/assets/app.js?' not in page.text
         assert client.get('/').status_code == 200
         assert client.head('/miniapp').status_code == 200
         assert client.head('/').status_code == 200

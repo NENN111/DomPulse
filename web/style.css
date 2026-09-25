@@ -278,3 +278,108 @@ html[data-theme="dark"] .event-list small { color: #aab4c4; }
 html[data-theme="dark"] .login-panel { background: var(--panel); }
 html[data-theme="dark"] .login-panel .login-error { color: #f0a1a5; }
 html[data-theme="dark"] .login-panel input { background: #292f3b; border-color: #4a5263; }
+.mobile-select-trigger { display: none; }
+@media (max-width: 700px) {
+  select[data-mobile-enhanced] { display: none; }
+  .mobile-select-trigger {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
+    padding: 10px 13px;
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    font-size: 14px;
+    line-height: 1.35;
+    text-align: left;
+    cursor: pointer;
+  }
+  .mobile-select-trigger span { min-width: 0; overflow-wrap: anywhere; }
+  .mobile-select-trigger i {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    margin-right: 2px;
+    border-right: 1.5px solid var(--muted);
+    border-bottom: 1.5px solid var(--muted);
+    transform: translateY(-2px) rotate(45deg);
+  }
+  .mobile-select-trigger:disabled { opacity: .6; }
+  .mobile-select-trigger:focus-visible, .select-sheet button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .select-sheet { display: block; position: fixed; inset: 0; z-index: 20; }
+  .select-sheet-backdrop { position: absolute; inset: 0; background: #10162899; }
+  .select-sheet-panel {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    max-height: min(70dvh, 540px);
+    padding-bottom: env(safe-area-inset-bottom);
+    overflow: hidden;
+    color: var(--text);
+    background: var(--panel);
+    border-radius: 16px 16px 0 0;
+    box-shadow: 0 -12px 36px #10162826;
+  }
+  .select-sheet-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    min-height: 60px;
+    padding: 10px 16px 10px 20px;
+    border-bottom: 1px solid var(--line);
+  }
+  .select-sheet-header h2 { margin: 0; font-size: 16px; font-weight: 700; }
+  .select-sheet-close {
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    flex: none;
+    padding: 0;
+    color: var(--muted);
+    background: transparent;
+    border: 0;
+    border-radius: 10px;
+    font-size: 27px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .select-sheet-options {
+    max-height: calc(min(70dvh, 540px) - 60px - env(safe-area-inset-bottom));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .select-sheet-option {
+    display: block;
+    width: 100%;
+    min-height: 50px;
+    padding: 12px 20px;
+    color: var(--text);
+    background: var(--panel);
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    font-size: 16px;
+    line-height: 1.35;
+    text-align: left;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+  }
+  .select-sheet-option:last-child { border-bottom: 0; }
+  .select-sheet-option[aria-current="true"] { color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+  .select-sheet-option:active, .select-sheet-close:active { background: var(--accent-soft); }
+  body.select-sheet-open { overflow: hidden; }
+}
+@media (max-width: 700px) {
+  .theme-toggle { min-height: 44px; }
+  .form-block .mobile-select-trigger { margin-bottom: 9px; }
+}
