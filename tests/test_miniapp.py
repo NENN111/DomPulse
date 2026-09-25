@@ -100,6 +100,9 @@ def test_public_entry_exposes_only_signed_miniapp_routes(tmp_path, monkeypatch):
     monkeypatch.setenv('MAX_BOT_TOKEN', TOKEN)
     with TestClient(create_public_app()) as client:
         assert client.get('/miniapp').status_code == 200
+        assert client.get('/').status_code == 200
+        assert client.head('/miniapp').status_code == 200
+        assert client.head('/').status_code == 200
         assert client.get('/miniapp/assets/app.js').status_code == 200
         for path in ('/health', '/docs', '/openapi.json', '/api/tickets', '/webhooks/max'):
             assert client.get(path).status_code == 404

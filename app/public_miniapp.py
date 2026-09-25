@@ -6,9 +6,9 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, Response
 
-from .api import create_app
+from .api import WEB_DIR, create_app
 from .polling import load_env
 
 
@@ -31,6 +31,11 @@ def create_public_app():
 
     @app.middleware('http')
     async def only_miniapp(request: Request, call_next):
+        if request.url.path in {'/', '/miniapp'}:
+            if request.method == 'HEAD':
+                return Response(status_code=200, headers={'Cache-Control': 'no-store'})
+            if request.method == 'GET' and request.url.path == '/':
+                return FileResponse(WEB_DIR / 'index.html', headers={'Cache-Control': 'no-store'})
         patterns = PUBLIC_GET if request.method == 'GET' else PUBLIC_POST if request.method == 'POST' else ()
         if not any(pattern.fullmatch(request.url.path) for pattern in patterns):
             return PlainTextResponse('Не найдено', status_code=404)
