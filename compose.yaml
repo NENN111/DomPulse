@@ -17,6 +17,23 @@ services:
       interval: 15s
       timeout: 5s
       retries: 3
+  miniapp:
+    build: .
+    command: ["python", "-m", "uvicorn", "app.public_miniapp:create_public_app", "--factory", "--host", "0.0.0.0", "--port", "8081"]
+    environment:
+      DOMPULSE_DB: "/data/dompulse.db"
+      MAX_WEBHOOK_SECRET: "${MAX_WEBHOOK_SECRET:?MAX_WEBHOOK_SECRET is required}"
+      MAX_BOT_TOKEN: "${MAX_BOT_TOKEN:?MAX_BOT_TOKEN is required}"
+    ports:
+      - "127.0.0.1:8081:8081"
+    volumes:
+      - dompulse-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
   max-worker:
     build: .
     profiles: ["max"]

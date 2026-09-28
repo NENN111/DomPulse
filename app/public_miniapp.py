@@ -18,12 +18,31 @@ PUBLIC_GET = (
     re.compile(r'^/miniapp/assets/(?:app\.js|style\.css)$'),
     re.compile(r'^/api/miniapp/overview$'),
     re.compile(r'^/api/tickets/[^/]+$'),
+    re.compile(r'^/health$'),
+    re.compile(r'^/openapi.json$'),
+    re.compile(r'^/api/me$'),
+    re.compile(r'^/api/tickets$'),
+    re.compile(r'^/api/metrics/house$'),
+    re.compile(r'^/api/houses/[^/]+/announcements$'),
 )
 PUBLIC_POST = (
     re.compile(r'^/api/tickets$'),
     re.compile(r'^/api/miniapp/tickets/[^/]+/priority$'),
     re.compile(r'^/api/miniapp/incidents$'),
     re.compile(r'^/api/miniapp/login$'),
+    re.compile(r'^/api/tickets/[^/]+/(?:comments|status)$'),
+)
+
+
+BEARER_GET = (
+    re.compile(r'^/api/me$'),
+    re.compile(r'^/api/tickets$'),
+    re.compile(r'^/api/tickets/[^/]+$'),
+    re.compile(r'^/api/metrics/house$'),
+    re.compile(r'^/api/houses/[^/]+/announcements$'),
+)
+BEARER_POST = (
+    re.compile(r'^/api/tickets$'),
     re.compile(r'^/api/tickets/[^/]+/(?:comments|status)$'),
 )
 
@@ -42,9 +61,11 @@ def create_public_app():
         if not any(pattern.fullmatch(request.url.path) for pattern in patterns):
             return PlainTextResponse('Не найдено', status_code=404)
         if request.url.path.startswith('/api/'):
-            if request.headers.get('Authorization'):
+            bearer = request.headers.get('Authorization')
+            bearer_patterns = BEARER_GET if request.method == 'GET' else BEARER_POST if request.method == 'POST' else ()
+            if bearer and not any(pattern.fullmatch(request.url.path) for pattern in bearer_patterns):
                 return PlainTextResponse('Требуется вход через MAX', status_code=401)
-            if request.url.path != '/api/miniapp/login' and not (
+            if not bearer and request.url.path != '/api/miniapp/login' and not (
                 request.headers.get('X-Max-Init-Data') or request.headers.get('X-Miniapp-Session')
             ):
                 return PlainTextResponse('Требуется вход через MAX', status_code=401)

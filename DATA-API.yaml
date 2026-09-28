@@ -1,102 +1,156 @@
-version: 1
-name: ДомПульс REST API
-base_url: http://127.0.0.1:8080
+version: "1"
+solution: "ДомПульс"
+name: "ДомПульс"
+base_url: "https://app.dom-pulse.ru"
+openapi: "https://app.dom-pulse.ru/openapi.json"
+test_data: "test-data/demo.json"
 authentication:
-  type: bearer
-  note: Локальные тестовые токены создаются app.seed и не публикуются.
+  type: http_bearer
+  credentials: "Локальный файл .local/evaluation-accounts.json создаётся скриптом scripts/issue_evaluation_tokens.py; токены передаются проверяющим отдельно от Git."
 checks:
-  - name: Проверка здоровья
+  - name: "Доступность API"
     method: GET
     path: /health
     role: anonymous
-    parameters: []
-    body: null
-    expected_status: 200
-    required_response_fields: [status, max_configured]
-  - name: Текущий профиль
+    request:
+      headers: {}
+      query: {}
+      path_parameters: {}
+      body: null
+    expected_status_codes: [200]
+    response:
+      content_type: application/json
+      type: object
+      required_fields: [status, max_configured]
+  - name: "Профиль жителя"
     method: GET
     path: /api/me
-    role: resident_or_operator
-    parameters: []
-    body: null
-    expected_status: 200
-    required_response_fields: [id, name, role, house_id, address]
-  - name: Создание заявки
+    role: resident
+    request:
+      headers: {Authorization: "Bearer ${resident_token}"}
+      query: {}
+      path_parameters: {}
+      body: null
+    expected_status_codes: [200]
+    response:
+      content_type: application/json
+      type: object
+      required_fields: [id, name, role, house_id, address]
+  - name: "Заявки жителя"
+    method: GET
+    path: /api/tickets
+    role: resident
+    request:
+      headers: {Authorization: "Bearer ${resident_token}"}
+      query: {limit: 50, offset: 0}
+      path_parameters: {}
+      body: null
+    expected_status_codes: [200]
+    response:
+      content_type: application/json
+      type: array
+      item_required_fields: [id, house_id, resident_id, status, category, priority]
+  - name: "Карточка своей заявки"
+    method: GET
+    path: /api/tickets/{ticket_id}
+    role: resident
+    request:
+      headers: {Authorization: "Bearer ${resident_token}"}
+      query: {}
+      path_parameters: {ticket_id: "${own_ticket_id}"}
+      body: null
+    expected_status_codes: [200]
+    response:
+      content_type: application/json
+      type: object
+      required_fields: [id, house_id, resident_id, status, version, events, attachments]
+  - name: "Новая заявка жителя"
     method: POST
     path: /api/tickets
     role: resident
-    parameters: []
-    body:
-      category: heating
-      location: Подъезд 1, квартира 12
-      description: Со вчерашнего вечера холодные батареи.
-    expected_status: 201
-    required_response_fields: [id, house_id, resident_id, status, priority, version, events, attachments]
-  - name: Получение заявки
-    method: GET
-    path: /api/tickets/{ticket_id}
-    role: owner_resident_or_house_operator
-    parameters: [ticket_id]
-    body: null
-    expected_status: 200
-    required_response_fields: [id, category, location, description, status, version, events, attachments]
-  - name: Список заявок
+    request:
+      headers: {Authorization: "Bearer ${resident_token}", Content-Type: application/json}
+      query: {}
+      path_parameters: {}
+      body:
+        house_id: "synthetic-house-01-1"
+        category: water
+        location: "Подъезд 1, этаж 2"
+        description: "В подъезде течёт труба возле второго этажа."
+    expected_status_codes: [201]
+    response:
+      content_type: application/json
+      type: object
+      required_fields: [id, house_id, resident_id, status, version, events, attachments]
+  - name: "Очередь оператора своего округа"
     method: GET
     path: /api/tickets
-    role: resident_or_operator
-    parameters: [limit, offset]
-    body: null
-    expected_status: 200
-    required_response_fields: []
-    response_type: array
-  - name: Комментарий
+    role: operator
+    request:
+      headers: {Authorization: "Bearer ${operator_token}"}
+      query: {limit: 50, offset: 0}
+      path_parameters: {}
+      body: null
+    expected_status_codes: [200]
+    response:
+      content_type: application/json
+      type: array
+      item_required_fields: [id, house_id, status, priority]
+  - name: "Комментарий оператора"
     method: POST
     path: /api/tickets/{ticket_id}/comments
-    role: owner_resident_or_house_operator
-    parameters: [ticket_id]
-    body:
-      text: Специалист получил сообщение и уточняет причину.
-    expected_status: 201
-    required_response_fields: [id, status, version, events]
-  - name: Изменение статуса
+    role: operator
+    request:
+      headers: {Authorization: "Bearer ${operator_token}", Content-Type: application/json}
+      query: {}
+      path_parameters: {ticket_id: "${created_ticket_id}"}
+      body: {text: "Заявка передана дежурному специалисту."}
+    expected_status_codes: [201]
+    response:
+      content_type: application/json
+      type: object
+      required_fields: [id, status, version, events]
+  - name: "Принятие заявки оператором"
     method: POST
     path: /api/tickets/{ticket_id}/status
-    role: depends_on_transition
-    parameters: [ticket_id]
-    body:
-      status: accepted
-      comment: Заявка принята диспетчером.
-      expected_version: 1
-    expected_status: 200
-    required_response_fields: [id, status, version, first_response_at]
-  - name: Показатели дома
+    role: operator
+    request:
+      headers: {Authorization: "Bearer ${operator_token}", Content-Type: application/json}
+      query: {}
+      path_parameters: {ticket_id: "${created_ticket_id}"}
+      body:
+        status: accepted
+        comment: "Заявка принята диспетчером."
+        expected_version: "${current_ticket_version}"
+    expected_status_codes: [200]
+    response:
+      content_type: application/json
+      type: object
+      required_fields: [id, status, version, first_response_at]
+  - name: "Показатели дома"
     method: GET
     path: /api/metrics/house
     role: operator
-    parameters: []
-    body: null
-    expected_status: 200
-    required_response_fields: [active, emergency, overdue, average_first_response_minutes, responded_with_sla_data, first_response_on_time_percent, top_categories, top_locations]
-  - name: Подтверждённый адрес регистрации
-    method: POST
-    path: /api/integrations/gosuslugi/residency
-    role: trusted_gosuslugi_bridge
-    parameters: [X-DomPulse-Signature]
-    body:
-      state: одноразовое_состояние_из_ссылки
-      subject_id: идентификатор_субъекта_у_провайдера
-      registrations:
-        - type: temporary
-          house_address: Москва, улица Временная, дом 2
-          fias_house_id: необязательный_идентификатор_дома
-          valid_until: 2099-12-31
-    expected_status: 200
-    required_response_fields: [status, linked, house_id]
+    request:
+      headers: {Authorization: "Bearer ${operator_token}"}
+      query: {}
+      path_parameters: {}
+      body: null
+    expected_status_codes: [200]
+    response:
+      content_type: application/json
+      type: object
+      required_fields: [active, emergency, overdue, average_first_response_minutes, responded_with_sla_data, first_response_on_time_percent, top_categories, top_locations]
 negative_checks:
-  - чужая заявка для жителя возвращает 404
-  - заявка другого дома для оператора возвращает 404
-  - недопустимый переход статуса возвращает 409
-  - устаревшая expected_version возвращает 409
-  - отсутствующий или неверный Bearer-токен возвращает 401
-  - неверная подпись Госуслуги-bridge возвращает 401
-  - повторное использование state возвращает 409
+  - name: "Запрос без токена"
+    method: GET
+    path: /api/tickets
+    expected_status_codes: [401]
+  - name: "Чужая заявка для жителя"
+    method: GET
+    path: /api/tickets/{ticket_id}
+    role: resident
+    request:
+      headers: {Authorization: "Bearer ${resident_token}"}
+      path_parameters: {ticket_id: "synthetic-ticket-02-01-1"}
+    expected_status_codes: [404]

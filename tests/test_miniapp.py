@@ -93,7 +93,7 @@ def test_operator_miniapp_uses_linked_role_and_house(tmp_path, monkeypatch):
         assert client.get('/api/miniapp/overview', headers=headers).json()['signals'] == []
 
 
-def test_public_entry_exposes_only_signed_miniapp_routes(tmp_path, monkeypatch):
+def test_public_entry_exposes_miniapp_and_authenticated_evaluation_api(tmp_path, monkeypatch):
     from app.public_miniapp import create_public_app
     monkeypatch.setenv('DOMPULSE_DB', str(tmp_path / 'public.db'))
     monkeypatch.setenv('MAX_WEBHOOK_SECRET', 'test-webhook-secret')
@@ -108,8 +108,12 @@ def test_public_entry_exposes_only_signed_miniapp_routes(tmp_path, monkeypatch):
         assert client.head('/miniapp').status_code == 200
         assert client.head('/').status_code == 200
         assert client.get('/miniapp/assets/app.js').status_code == 200
-        for path in ('/health', '/docs', '/openapi.json', '/api/tickets', '/webhooks/max'):
+        assert client.get('/health').status_code == 200
+        assert client.get('/openapi.json').json()['openapi'].startswith('3.')
+        for path in ('/docs', '/webhooks/max'):
             assert client.get(path).status_code == 404
+        assert client.get('/api/tickets').status_code == 401
+        assert client.get('/api/tickets', headers={'Authorization': 'Bearer wrong'}).status_code == 401
         assert client.get('/api/miniapp/overview').status_code == 401
         assert client.get('/api/miniapp/overview', headers={'Authorization': 'Bearer anything'}).status_code == 401
 
@@ -305,4 +309,4 @@ def test_resident_miniapp_follows_verified_houses_and_owns_tickets(tmp_path, mon
                            json={'priority': 'urgent', 'expected_version': 1}).status_code == 403
         assert client.post('/api/tickets', headers={'Authorization': 'Bearer resident-secret'}, json={
             'house_id': 'one', 'location': 'Подвал', 'description': 'Вода возле труб в подвале',
-        }).status_code == 401
+        }).status_code == 201

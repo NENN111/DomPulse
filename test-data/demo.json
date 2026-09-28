@@ -1,0 +1,179 @@
+{
+    "schema_version":  1,
+    "description":  "Синтетические адреса и идентификаторы для воспроизводимой проверки; персональных данных нет.",
+    "generator":  "python -m app.seed --db \u003cпуть к новой базе\u003e",
+    "districts":  [
+                      {
+                          "name":  "ЦАО",
+                          "houses":  [
+                                         {
+                                             "id":  "synthetic-house-01-1",
+                                             "address":  "Москва, улица Большая Грузинская, дом 42"
+                                         },
+                                         {
+                                             "id":  "synthetic-house-01-2",
+                                             "address":  "Москва, улица Покровка, дом 21"
+                                         }
+                                     ]
+                      },
+                      {
+                          "name":  "САО",
+                          "houses":  [
+                                         {
+                                             "id":  "synthetic-house-02-1",
+                                             "address":  "Москва, улица Алабяна, дом 10"
+                                         },
+                                         {
+                                             "id":  "synthetic-house-02-2",
+                                             "address":  "Москва, улица Дубнинская, дом 30"
+                                         }
+                                     ]
+                      },
+                      {
+                          "name":  "СВАО",
+                          "houses":  [
+                                         {
+                                             "id":  "synthetic-house-03-1",
+                                             "address":  "Москва, улица Ботаническая, дом 19"
+                                         },
+                                         {
+                                             "id":  "synthetic-house-03-2",
+                                             "address":  "Москва, улица Лётчика Бабушкина, дом 23"
+                                         }
+                                     ]
+                      },
+                      {
+                          "name":  "ВАО",
+                          "houses":  [
+                                         {
+                                             "id":  "synthetic-house-04-1",
+                                             "address":  "Москва, улица Первомайская, дом 80"
+                                         },
+                                         {
+                                             "id":  "synthetic-house-04-2",
+                                             "address":  "Москва, улица Амурская, дом 15"
+                                         }
+                                     ]
+                      },
+                      {
+                          "name":  "ЮВАО",
+                          "houses":  [
+                                         {
+                                             "id":  "synthetic-house-05-1",
+                                             "address":  "Москва, улица Люблинская, дом 53"
+                                         },
+                                         {
+                                             "id":  "synthetic-house-05-2",
+                                             "address":  "Москва, улица Юных Ленинцев, дом 47"
+                                         }
+                                     ]
+                      },
+                      {
+                          "name":  "ЮАО",
+                          "houses":  [
+                                         {
+                                             "id":  "synthetic-house-06-1",
+                                             "address":  "Москва, улица Кировоградская, дом 9"
+                                         },
+                                         {
+                                             "id":  "synthetic-house-06-2",
+                                             "address":  "Москва, улица Нагатинская, дом 25"
+                                         }
+                                     ]
+                      },
+                      {
+                          "name":  "ЮЗАО",
+                          "houses":  [
+                                         {
+                                             "id":  "synthetic-house-07-1",
+                                             "address":  "Москва, улица Профсоюзная, дом 43"
+                                         },
+                                         {
+                                             "id":  "synthetic-house-07-2",
+                                             "address":  "Москва, улица Академика Пилюгина, дом 12"
+                                         }
+                                     ]
+                      },
+                      {
+                          "name":  "ЗАО",
+                          "houses":  [
+                                         {
+                                             "id":  "synthetic-house-08-1",
+                                             "address":  "Москва, улица Мосфильмовская, дом 17"
+                                         },
+                                         {
+                                             "id":  "synthetic-house-08-2",
+                                             "address":  "Москва, улица Кастанаевская, дом 39"
+                                         }
+                                     ]
+                      },
+                      {
+                          "name":  "СЗАО",
+                          "houses":  [
+                                         {
+                                             "id":  "synthetic-house-09-1",
+                                             "address":  "Москва, улица Народного Ополчения, дом 35"
+                                         },
+                                         {
+                                             "id":  "synthetic-house-09-2",
+                                             "address":  "Москва, улица Свободы, дом 62"
+                                         }
+                                     ]
+                      },
+                      {
+                          "name":  "Зеленоградский",
+                          "houses":  [
+                                         {
+                                             "id":  "synthetic-house-10-1",
+                                             "address":  "Москва, Зеленоград, корпус 1106"
+                                         },
+                                         {
+                                             "id":  "synthetic-house-10-2",
+                                             "address":  "Москва, Зеленоград, корпус 1459"
+                                         }
+                                     ]
+                      },
+                      {
+                          "name":  "Новомосковский",
+                          "houses":  [
+                                         {
+                                             "id":  "synthetic-house-11-1",
+                                             "address":  "Москва, Коммунарка, улица Александры Монаховой, дом 92"
+                                         },
+                                         {
+                                             "id":  "synthetic-house-11-2",
+                                             "address":  "Москва, Московский, улица Солнечная, дом 5"
+                                         }
+                                     ]
+                      },
+                      {
+                          "name":  "Троицкий",
+                          "houses":  [
+                                         {
+                                             "id":  "synthetic-house-12-1",
+                                             "address":  "Москва, Троицк, Октябрьский проспект, дом 15"
+                                         },
+                                         {
+                                             "id":  "synthetic-house-12-2",
+                                             "address":  "Москва, Троицк, улица Центральная, дом 28"
+                                         }
+                                     ]
+                      }
+                  ],
+    "test_users":  [
+                       {
+                           "role":  "resident",
+                           "selector":  {
+                                            "house_id":  "synthetic-house-01-1"
+                                        }
+                       },
+                       {
+                           "role":  "operator",
+                           "selector":  {
+                                            "district":  "ЦАО"
+                                        }
+                       }
+                   ],
+    "credentials":  "Локальные токены создаются отдельно и не входят в репозиторий.",
+    "sample_ticket_selection":  "Возьмите id своей заявки из GET /api/tickets: порядковый номер жителя зависит от уже существующих домов в базе."
+}
