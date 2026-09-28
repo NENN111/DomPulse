@@ -1,0 +1,8 @@
+{
+    email {$ACME_EMAIL}
+}
+
+{$CADDY_DOMAIN} {
+    encode zstd gzip
+    reverse_proxy miniapp:8081
+}

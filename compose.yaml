@@ -4,6 +4,7 @@ services:
     environment:
       DOMPULSE_DB: "/data/dompulse.db"
       MAX_BOT_TOKEN: "${MAX_BOT_TOKEN:?MAX_BOT_TOKEN is required}"
+      MAX_BOT_USERNAME: "${MAX_BOT_USERNAME:-}"
       MAX_WEBHOOK_SECRET: "${MAX_WEBHOOK_SECRET:?MAX_WEBHOOK_SECRET is required}"
       MINIAPP_PUBLIC_URL: "${MINIAPP_PUBLIC_URL:-}"
       GOSUSLUGI_BRIDGE_URL: "${GOSUSLUGI_BRIDGE_URL:-}"
@@ -34,6 +35,22 @@ services:
       interval: 15s
       timeout: 5s
       retries: 3
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["vps"]
+    depends_on:
+      - miniapp
+    environment:
+      CADDY_DOMAIN: "${CADDY_DOMAIN:-}"
+      ACME_EMAIL: "${ACME_EMAIL:-}"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
   max-worker:
     build: .
     profiles: ["max"]
@@ -54,6 +71,7 @@ services:
       DOMPULSE_DB: "/data/dompulse.db"
       MAX_API_BASE: "${MAX_API_BASE:?MAX_API_BASE is required}"
       MAX_BOT_TOKEN: "${MAX_BOT_TOKEN:?MAX_BOT_TOKEN is required}"
+      MAX_BOT_USERNAME: "${MAX_BOT_USERNAME:-}"
       GOSUSLUGI_BRIDGE_URL: "${GOSUSLUGI_BRIDGE_URL:-}"
       MINIAPP_PUBLIC_URL: "${MINIAPP_PUBLIC_URL:-}"
     volumes:
@@ -61,3 +79,5 @@ services:
     restart: unless-stopped
 volumes:
   dompulse-data:
+  caddy-data:
+  caddy-config:

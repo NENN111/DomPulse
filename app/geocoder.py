@@ -1,10 +1,10 @@
 ﻿"""Проверка московского адреса через HTTP Геокодер Яндекса."""
 from dataclasses import dataclass
 import os
-import ssl
 
-import certifi
 import httpx
+
+from .max_api import create_tls_context
 
 DISTRICTS = {
     "центральный административный округ": "ЦАО", "северный административный округ": "САО",
@@ -45,7 +45,7 @@ async def geocode_address(address: str) -> GeocodedAddress:
     if not key: raise GeocoderError('Геокодер Яндекса не настроен')
     url=os.getenv('YANDEX_GEOCODER_URL','https://geocode-maps.yandex.ru/v1/')
     try:
-        tls_context = ssl.create_default_context(cafile=certifi.where())
+        tls_context = create_tls_context()
         async with httpx.AsyncClient(timeout=10, verify=tls_context) as client:
             response=await client.get(url, params={'apikey':key,'geocode':address,'format':'json','lang':'ru_RU'})
             response.raise_for_status(); payload=response.json()

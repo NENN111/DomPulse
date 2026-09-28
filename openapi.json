@@ -124,6 +124,45 @@
       "get": {
         "summary": "Me",
         "operationId": "me_api_me_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-max-init-data",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Max-Init-Data"
+            }
+          },
+          {
+            "name": "x-miniapp-session",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Miniapp-Session"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -134,19 +173,63 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
           }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        }
       }
     },
     "/api/metrics/house": {
       "get": {
         "summary": "Metrics",
         "operationId": "metrics_api_metrics_house_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-max-init-data",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Max-Init-Data"
+            }
+          },
+          {
+            "name": "x-miniapp-session",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Miniapp-Session"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -155,13 +238,303 @@
                 "schema": {}
               }
             }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
           }
+        }
+      }
+    },
+    "/api/miniapp/login": {
+      "post": {
+        "summary": "Miniapp Login",
+        "operationId": "miniapp_login_api_miniapp_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MiniappLogin"
+              }
+            }
+          },
+          "required": true
         },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/miniapp/overview": {
+      "get": {
+        "summary": "Miniapp Overview",
+        "operationId": "miniapp_overview_api_miniapp_overview_get",
         "security": [
           {
             "HTTPBearer": []
           }
-        ]
+        ],
+        "parameters": [
+          {
+            "name": "house_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "House Id"
+            }
+          },
+          {
+            "name": "x-max-init-data",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Max-Init-Data"
+            }
+          },
+          {
+            "name": "x-miniapp-session",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Miniapp-Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/miniapp/tickets/{ticket_id}/priority": {
+      "post": {
+        "summary": "Miniapp Priority",
+        "operationId": "miniapp_priority_api_miniapp_tickets__ticket_id__priority_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "ticket_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Ticket Id"
+            }
+          },
+          {
+            "name": "x-max-init-data",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Max-Init-Data"
+            }
+          },
+          {
+            "name": "x-miniapp-session",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Miniapp-Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PriorityChange"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/miniapp/incidents": {
+      "post": {
+        "summary": "Miniapp Confirm Incident",
+        "operationId": "miniapp_confirm_incident_api_miniapp_incidents_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "house_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "House Id"
+            }
+          },
+          {
+            "name": "x-max-init-data",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Max-Init-Data"
+            }
+          },
+          {
+            "name": "x-miniapp-session",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Miniapp-Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IncidentConfirm"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/tickets": {
@@ -171,6 +544,40 @@
         "security": [
           {
             "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-max-init-data",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Max-Init-Data"
+            }
+          },
+          {
+            "name": "x-miniapp-session",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Miniapp-Session"
+            }
           }
         ],
         "requestBody": {
@@ -237,6 +644,38 @@
               "default": 0,
               "title": "Offset"
             }
+          },
+          {
+            "name": "x-max-init-data",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Max-Init-Data"
+            }
+          },
+          {
+            "name": "x-miniapp-session",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Miniapp-Session"
+            }
           }
         ],
         "responses": {
@@ -285,6 +724,38 @@
               "type": "string",
               "title": "Ticket Id"
             }
+          },
+          {
+            "name": "x-max-init-data",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Max-Init-Data"
+            }
+          },
+          {
+            "name": "x-miniapp-session",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Miniapp-Session"
+            }
           }
         ],
         "responses": {
@@ -328,6 +799,38 @@
             "schema": {
               "type": "string",
               "title": "Ticket Id"
+            }
+          },
+          {
+            "name": "x-max-init-data",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Max-Init-Data"
+            }
+          },
+          {
+            "name": "x-miniapp-session",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Miniapp-Session"
             }
           }
         ],
@@ -383,6 +886,38 @@
               "type": "string",
               "title": "Ticket Id"
             }
+          },
+          {
+            "name": "x-max-init-data",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Max-Init-Data"
+            }
+          },
+          {
+            "name": "x-miniapp-session",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Miniapp-Session"
+            }
           }
         ],
         "requestBody": {
@@ -418,10 +953,260 @@
           }
         }
       }
+    },
+    "/api/houses/{house_id}/announcements": {
+      "post": {
+        "summary": "Create Announcement",
+        "description": "Оператор УК публикует объявление: бот мгновенно рассылает его всем жильцам дома в MAX.",
+        "operationId": "create_announcement_api_houses__house_id__announcements_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "house_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "House Id"
+            }
+          },
+          {
+            "name": "x-max-init-data",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Max-Init-Data"
+            }
+          },
+          {
+            "name": "x-miniapp-session",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Miniapp-Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnnouncementCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Announcement"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "List Announcements",
+        "description": "Последние объявления дома — доступно и жильцам, и операторам.",
+        "operationId": "list_announcements_api_houses__house_id__announcements_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "house_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "House Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "x-max-init-data",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Max-Init-Data"
+            }
+          },
+          {
+            "name": "x-miniapp-session",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Miniapp-Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Announcement"
+                  },
+                  "title": "Response List Announcements Api Houses  House Id  Announcements Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
     "schemas": {
+      "Announcement": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "house_id": {
+            "type": "string",
+            "title": "House Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "body": {
+            "type": "string",
+            "title": "Body"
+          },
+          "created_by": {
+            "type": "string",
+            "title": "Created By"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "sent_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sent At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "house_id",
+          "title",
+          "body",
+          "created_by",
+          "created_at"
+        ],
+        "title": "Announcement"
+      },
+      "AnnouncementCreate": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 3,
+            "title": "Title"
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 5,
+            "title": "Body"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "title",
+          "body"
+        ],
+        "title": "AnnouncementCreate"
+      },
       "CommentCreate": {
         "properties": {
           "text": {
@@ -525,6 +1310,58 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "IncidentConfirm": {
+        "properties": {
+          "ticket_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Ticket Ids"
+          },
+          "priority": {
+            "type": "string",
+            "title": "Priority"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ticket_ids",
+          "priority"
+        ],
+        "title": "IncidentConfirm"
+      },
+      "MiniappLogin": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "title": "MiniappLogin"
+      },
+      "PriorityChange": {
+        "properties": {
+          "priority": {
+            "type": "string",
+            "title": "Priority"
+          },
+          "expected_version": {
+            "type": "integer",
+            "title": "Expected Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "priority",
+          "expected_version"
+        ],
+        "title": "PriorityChange"
       },
       "Profile": {
         "properties": {
@@ -744,6 +1581,17 @@
       },
       "TicketCreate": {
         "properties": {
+          "house_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "House Id"
+          },
           "category": {
             "type": "string",
             "enum": [

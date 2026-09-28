@@ -192,7 +192,7 @@ def create_app(db_path: str | None = None):
         async with db.connect() as conn:
             cursor = await conn.execute('SELECT 1')
             await cursor.fetchone()
-        return {'status': 'ok', 'max_configured': True}
+        return {'status': 'ok', 'max_configured': bool(os.getenv('MAX_BOT_TOKEN', '').strip())}
 
     @app.get('/miniapp', include_in_schema=False)
     async def miniapp_page():

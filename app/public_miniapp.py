@@ -78,7 +78,12 @@ def main():
     load_env(Path('.env'))
     if not os.getenv('MAX_WEBHOOK_SECRET'):
         os.environ['MAX_WEBHOOK_SECRET'] = secrets.token_urlsafe(32)
-    uvicorn.run('app.public_miniapp:create_public_app', factory=True, host='127.0.0.1', port=8081)
+    uvicorn.run(
+        'app.public_miniapp:create_public_app',
+        factory=True,
+        host=os.getenv('PUBLIC_MINIAPP_HOST', '127.0.0.1'),
+        port=8081,
+    )
 
 
 if __name__ == '__main__':

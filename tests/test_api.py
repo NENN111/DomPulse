@@ -118,6 +118,16 @@ def test_auth_and_validation(client):
     assert metrics.json()['active'] == 0
 
 
+def test_health_reports_whether_max_token_is_configured(tmp_path, monkeypatch):
+    monkeypatch.setenv('MAX_WEBHOOK_SECRET', 'test-webhook-secret')
+    monkeypatch.delenv('MAX_BOT_TOKEN', raising=False)
+    with TestClient(create_app(str(tmp_path / 'health.db'))) as client:
+        assert client.get('/health').json()['max_configured'] is False
+    monkeypatch.setenv('MAX_BOT_TOKEN', 'bot-token')
+    with TestClient(create_app(str(tmp_path / 'health.db'))) as client:
+        assert client.get('/health').json()['max_configured'] is True
+
+
 def test_data_persists_after_app_restart(tmp_path, monkeypatch):
     monkeypatch.setenv('MAX_WEBHOOK_SECRET', 'test-webhook-secret')
     path=str(tmp_path/'persistent.db')
@@ -154,6 +164,11 @@ def test_announcements_operator_can_post_and_residents_receive(client):
                      (111, 'alice', '2026-01-01T00:00:00+00:00'))
         conn.execute("INSERT INTO max_links(max_user_id, user_id, linked_at) VALUES(?,?,?)",
                      (222, 'bob', '2026-01-01T00:00:00+00:00'))
+        conn.execute(
+            'INSERT INTO user_houses(user_id,house_id,verification_method,verified_at) VALUES(?,?,?,?)',
+            ('alice', 'h2', 'code', '2026-01-02T00:00:00+00:00'),
+        )
+        conn.execute("UPDATE users SET house_id='h2' WHERE id='alice'")
 
     response = client.post('/api/houses/h1/announcements', headers=headers('staff'), json={
         'title': 'Плановое отключение воды',

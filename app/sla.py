@@ -19,7 +19,7 @@ def is_overdue(due_at: str | None, first_response_at: str | None) -> bool:
 
 async def scan_overdue(db: AsyncDatabase) -> int:
     """Create one outbox alert per overdue ticket and notify linked operators."""
-    from .max_webhook import keyboard, queue_message
+    from .max_webhook import menu, queue_message
     now = datetime.now(timezone.utc).isoformat()
     alerted = 0
     async with db.connect(write=True) as conn:
@@ -32,24 +32,30 @@ async def scan_overdue(db: AsyncDatabase) -> int:
         tickets = await cursor.fetchall()
         for ticket in tickets:
             cursor = await conn.execute(
+                'SELECT DISTINCT l.max_user_id FROM max_links l '
+                'JOIN users u ON u.id=l.user_id '
+                'LEFT JOIN operator_districts od ON od.user_id=u.id '
+                'LEFT JOIN house_districts hd ON hd.district=od.district '
+                "WHERE u.role='operator' AND (u.house_id=? OR hd.house_id=?)",
+                (ticket['house_id'], ticket['house_id']),
+            )
+            operators = await cursor.fetchall()
+            if not operators:
+                # Keep the ticket eligible: an operator may be assigned after this scan.
+                continue
+            cursor = await conn.execute(
                 'INSERT OR IGNORE INTO sla_alerts(ticket_id,created_at) VALUES(?,?)',
                 (ticket['id'], now),
             )
             if cursor.rowcount == 0:
                 continue
-            cursor = await conn.execute(
-                'SELECT l.max_user_id FROM max_links l JOIN users u ON u.id=l.user_id '
-                "WHERE u.house_id=? AND u.role='operator'",
-                (ticket['house_id'],),
-            )
-            operators = await cursor.fetchall()
             message = (
                 f"Просрочена заявка #{ticket['id'][:8]} ({ticket['priority']}).\n"
                 f"Место: {ticket['location']}\n"
-                'Откройте очередь дома и возьмите её в работу.'
+                'Откройте Mini App и возьмите её в работу.'
             )
+            _, attachments = menu('operator')
             for operator in operators:
-                await queue_message(conn, operator['max_user_id'], message,
-                                    keyboard([[f"Заявка #{ticket['id'][:8]}"], ['Очередь дома']]), now)
+                await queue_message(conn, operator['max_user_id'], message, attachments, now)
             alerted += 1
     return alerted

@@ -120,13 +120,17 @@ async def queue_message(conn, user_id: int, text: str, attachments: list[dict[st
 
 def menu(role: str = 'resident') -> tuple[str, list[dict[str, Any]]]:
     if role == 'operator':
-        app_button = {'type': 'open_app', 'text': 'Проблемы и показатели', 'web_app': os.getenv('MAX_BOT_USERNAME', '').strip()}
+        bot_username = os.getenv('MAX_BOT_USERNAME', '').strip()
+        buttons = []
+        if bot_username:
+            buttons.append([{'type': 'open_app', 'text': 'Проблемы и показатели', 'web_app': bot_username}])
         return (
-            'ДомПульс: рабочее место диспетчера УК. Откройте проблемы и показатели домов округа.',
+            ('ДомПульс: рабочее место диспетчера УК. Откройте проблемы и показатели домов округа.'
+             if bot_username else
+             'ДомПульс: Mini App пока не настроен. Укажите MAX_BOT_USERNAME у бота.'),
             [{
                 'type': 'inline_keyboard',
-                'payload': {'buttons': [
-                    [app_button],
+                'payload': {'buttons': buttons + [
                     [{'type': 'message', 'text': 'Создать объявление'}],
                     [{'type': 'message', 'text': 'Мой профиль и округ'}],
                     [{'type': 'message', 'text': 'Выйти из аккаунта'}],

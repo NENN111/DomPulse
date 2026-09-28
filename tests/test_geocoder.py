@@ -4,7 +4,7 @@ import ssl
 from app import geocoder
 
 
-def test_geocoder_uses_independent_ca_bundle_and_detects_district(monkeypatch):
+def test_geocoder_uses_configured_tls_context_and_detects_district(monkeypatch):
     payload = {
         'response': {'GeoObjectCollection': {'featureMember': [{
             'GeoObject': {
@@ -42,11 +42,13 @@ def test_geocoder_uses_independent_ca_bundle_and_detects_district(monkeypatch):
             return Response()
 
     monkeypatch.setenv('YANDEX_MAPS_API_KEY', 'test-key')
+    tls_context = ssl.create_default_context()
+    monkeypatch.setattr(geocoder, 'create_tls_context', lambda: tls_context)
     monkeypatch.setattr(geocoder.httpx, 'AsyncClient', Client)
 
     result = asyncio.run(geocoder.geocode_address('\u041c\u043e\u0441\u043a\u0432\u0430, \u0422\u0432\u0435\u0440\u0441\u043a\u0430\u044f, 1'))
 
-    assert isinstance(captured['verify'], ssl.SSLContext)
+    assert captured['verify'] is tls_context
     assert result.district == '\u0426\u0410\u041e'
     assert result.latitude == 55.7558
     assert result.longitude == 37.6177

@@ -34,19 +34,23 @@ def without_unavailable_app(attachments: list[dict]) -> list[dict] | None:
 
 async def deliver_one(db: AsyncDatabase, client: MaxClient) -> bool:
     now = utc_now()
+    lease_expired_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
     async with db.connect(write=True) as conn:
         cursor = await conn.execute(
-            "SELECT * FROM max_outbox WHERE status IN ('pending','failed') "
-            'AND next_attempt_at<=? ORDER BY id LIMIT 1',
-            (now,),
+            "SELECT * FROM max_outbox WHERE "
+            "(status='pending' AND next_attempt_at<=?) OR "
+            "(status='failed' AND retryable=1 AND next_attempt_at<=?) OR "
+            "(status='sending' AND COALESCE(sending_at, created_at)<=?) "
+            'ORDER BY id LIMIT 1',
+            (now, now, lease_expired_at),
         )
         row = await cursor.fetchone()
         if row is None:
             return False
         message = dict(row)
         await conn.execute(
-            "UPDATE max_outbox SET status='sending',attempts=attempts+1,error=NULL WHERE id=?",
-            (message['id'],),
+            "UPDATE max_outbox SET status='sending',attempts=attempts+1,sending_at=?,error=NULL WHERE id=?",
+            (now, message['id']),
         )
 
     attachments = json.loads(message['attachments_json'])
@@ -62,18 +66,22 @@ async def deliver_one(db: AsyncDatabase, client: MaxClient) -> bool:
             attachments = fallback
             mid = await client.send_message(message['max_user_id'], delivered_text, attachments)
     except MaxAPIError as exc:
+        retryable = int(exc.retryable)
         delay_seconds = min(300, 2 ** min(message['attempts'] + 1, 8))
-        retry_at = (datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)).isoformat()
+        retry_at = (
+            (datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)).isoformat()
+            if retryable else '9999-12-31T23:59:59+00:00'
+        )
         async with db.connect(write=True) as conn:
             await conn.execute(
-                "UPDATE max_outbox SET status='failed',next_attempt_at=?,error=? WHERE id=?",
-                (retry_at, str(exc)[:1000], message['id']),
+                "UPDATE max_outbox SET status='failed',retryable=?,sending_at=NULL,next_attempt_at=?,error=? WHERE id=?",
+                (retryable, retry_at, str(exc)[:1000], message['id']),
             )
         return True
 
     async with db.connect(write=True) as conn:
         await conn.execute(
-            "UPDATE max_outbox SET status='sent',max_mid=?,sent_at=?,text=?,attachments_json=? WHERE id=?",
+            "UPDATE max_outbox SET status='sent',sending_at=NULL,max_mid=?,sent_at=?,text=?,attachments_json=? WHERE id=?",
             (mid, utc_now(), delivered_text, json.dumps(attachments, ensure_ascii=False), message['id']),
         )
     return True

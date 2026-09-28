@@ -106,10 +106,12 @@ CREATE TABLE IF NOT EXISTS max_outbox (
    CHECK(status IN ('pending','sending','sent','failed')),
  attempts INTEGER NOT NULL DEFAULT 0,
  next_attempt_at TEXT NOT NULL,
- error TEXT,
- max_mid TEXT,
- created_at TEXT NOT NULL,
- sent_at TEXT
+  error TEXT,
+  max_mid TEXT,
+  created_at TEXT NOT NULL,
+  sent_at TEXT,
+  sending_at TEXT,
+  retryable INTEGER NOT NULL DEFAULT 1 CHECK(retryable IN (0,1))
 );
 CREATE INDEX IF NOT EXISTS max_outbox_delivery
  ON max_outbox(status, next_attempt_at, id);
@@ -230,6 +232,11 @@ TICKET_MIGRATIONS = {
     'closed_at': 'ALTER TABLE tickets ADD COLUMN closed_at TEXT',
 }
 
+OUTBOX_MIGRATIONS = {
+    'sending_at': 'ALTER TABLE max_outbox ADD COLUMN sending_at TEXT',
+    'retryable': 'ALTER TABLE max_outbox ADD COLUMN retryable INTEGER NOT NULL DEFAULT 1 CHECK(retryable IN (0,1))',
+}
+
 HOUSE_MEMBERSHIP_BACKFILL = """
 INSERT OR IGNORE INTO user_houses(user_id,house_id,verification_method,verified_at)
 SELECT u.id,u.house_id,'legacy',COALESCE(
@@ -256,6 +263,10 @@ class Database:
             columns = {row['name'] for row in conn.execute('PRAGMA table_info(tickets)').fetchall()}
             for column, statement in TICKET_MIGRATIONS.items():
                 if column not in columns:
+                    conn.execute(statement)
+            outbox_columns = {row['name'] for row in conn.execute('PRAGMA table_info(max_outbox)').fetchall()}
+            for column, statement in OUTBOX_MIGRATIONS.items():
+                if column not in outbox_columns:
                     conn.execute(statement)
             for house in conn.execute('SELECT id,address FROM houses').fetchall():
                 canonical = canonical_house_address(house['address'])
@@ -297,6 +308,11 @@ class AsyncDatabase:
             columns = {row['name'] for row in await cursor.fetchall()}
             for column, statement in TICKET_MIGRATIONS.items():
                 if column not in columns:
+                    await conn.execute(statement)
+            cursor = await conn.execute('PRAGMA table_info(max_outbox)')
+            outbox_columns = {row['name'] for row in await cursor.fetchall()}
+            for column, statement in OUTBOX_MIGRATIONS.items():
+                if column not in outbox_columns:
                     await conn.execute(statement)
             houses = await (await conn.execute('SELECT id,address FROM houses')).fetchall()
             for house in houses:

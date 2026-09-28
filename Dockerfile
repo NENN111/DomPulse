@@ -6,5 +6,5 @@ COPY app ./app
 COPY web ./web
 RUN useradd --uid 10001 --create-home appuser && mkdir /data && chown appuser /data
 USER appuser
-EXPOSE 8080
+EXPOSE 8080 8081
 CMD ["python", "-m", "uvicorn", "app.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080"]

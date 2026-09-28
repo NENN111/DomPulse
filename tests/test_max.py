@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import sqlite3
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -365,6 +366,76 @@ def test_sla_scanner_alerts_operator_once(tmp_path):
     assert notice['max_user_id'] == 900 and 'Просрочена' in notice['text']
 
 
+def test_sla_scanner_notifies_operator_assigned_through_district(tmp_path, monkeypatch):
+    monkeypatch.setenv('MAX_BOT_USERNAME', 'test_bot')
+    path = str(tmp_path / 'sla-district.db')
+    db = Database(path)
+    db.initialize()
+    with db.connect(write=True) as conn:
+        conn.executemany('INSERT INTO houses VALUES(?,?)', [('h1', 'Дом 1'), ('h2', 'Дом 2')])
+        conn.executemany('INSERT INTO users VALUES(?,?,?,?,?)', [
+            ('resident', 'Житель', 'resident', 'h1', token_hash('resident')),
+            ('operator', 'Диспетчер', 'operator', 'h2', token_hash('operator')),
+        ])
+        conn.execute('INSERT INTO max_links VALUES(?,?,?)', (901, 'operator', '2020-01-01T00:00:00+00:00'))
+        conn.execute('INSERT INTO house_districts VALUES(?,?)', ('h1', 'ЦАО'))
+        conn.execute('INSERT INTO operator_districts VALUES(?,?)', ('operator', 'ЦАО'))
+        conn.execute(
+            'INSERT INTO tickets(id,house_id,resident_id,category,location,description,status,priority,version,created_at,updated_at,due_at) '
+            "VALUES('sla-district','h1','resident','water','Подвал','Вода течёт уже давно','new','urgent',1,?,?,?)",
+            ('2020-01-01T00:00:00+00:00', '2020-01-01T00:00:00+00:00', '2020-01-01T00:01:00+00:00'),
+        )
+    assert asyncio.run(scan_overdue(AsyncDatabase(path))) == 1
+    with db.connect() as conn:
+        notice = dict(conn.execute('SELECT * FROM max_outbox').fetchone())
+    buttons = json.loads(notice['attachments_json'])[0]['payload']['buttons']
+    assert notice['max_user_id'] == 901
+    assert buttons[0][0]['type'] == 'open_app'
+    assert all(button['text'] != 'Очередь дома' for row in buttons for button in row)
+
+
+def test_multiple_operators_can_share_a_district(tmp_path):
+    db = Database(str(tmp_path / 'operator-districts.db'))
+    db.initialize()
+    with db.connect(write=True) as conn:
+        conn.executemany('INSERT INTO houses VALUES(?,?)', [('h1', 'Дом 1'), ('h2', 'Дом 2')])
+        conn.executemany('INSERT INTO users VALUES(?,?,?,?,?)', [
+            ('operator-1', 'Первый', 'operator', 'h1', token_hash('operator-1')),
+            ('operator-2', 'Второй', 'operator', 'h2', token_hash('operator-2')),
+        ])
+        conn.executemany('INSERT INTO operator_districts VALUES(?,?)', [
+            ('operator-1', 'ЦАО'), ('operator-2', 'ЦАО'),
+        ])
+        count = conn.execute("SELECT COUNT(*) FROM operator_districts WHERE district='ЦАО'").fetchone()[0]
+    assert count == 2
+
+
+def test_initialize_migrates_legacy_outbox_and_district_index(tmp_path):
+    path = str(tmp_path / 'legacy.db')
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE max_outbox ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,max_user_id INTEGER NOT NULL,text TEXT NOT NULL,"
+        "attachments_json TEXT NOT NULL DEFAULT '[]',"
+        "status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','sending','sent','failed')),"
+        "attempts INTEGER NOT NULL DEFAULT 0,next_attempt_at TEXT NOT NULL,error TEXT,max_mid TEXT,"
+        "created_at TEXT NOT NULL,sent_at TEXT)"
+    )
+    conn.execute('CREATE TABLE operator_districts (user_id TEXT NOT NULL,district TEXT NOT NULL,PRIMARY KEY(user_id,district))')
+    conn.execute('CREATE UNIQUE INDEX uq_operator_district ON operator_districts(district)')
+    conn.commit()
+    conn.close()
+
+    Database(path).initialize()
+
+    conn = sqlite3.connect(path)
+    outbox_columns = {row[1] for row in conn.execute('PRAGMA table_info(max_outbox)')}
+    district_indexes = {row[1] for row in conn.execute('PRAGMA index_list(operator_districts)')}
+    conn.close()
+    assert {'sending_at', 'retryable'} <= outbox_columns
+    assert 'uq_operator_district' not in district_indexes
+
+
 def test_one_time_code_links_max_user_without_storing_code(max_app):
     client, db = max_app
     headers = {'X-Max-Bot-Api-Secret': 'test-webhook-secret'}
@@ -582,6 +653,36 @@ def test_outbox_schedules_retry(tmp_path):
         row = dict(conn.execute('SELECT * FROM max_outbox').fetchone())
     assert row['status'] == 'failed'
     assert row['attempts'] == 1 and row['error'] == 'temporary failure'
+    assert asyncio.run(deliver_one(db, FakeMaxClient())) is False
+
+
+def test_outbox_recovers_message_left_sending_after_restart(tmp_path):
+    db = queued_db(tmp_path)
+    with Database(db.path).connect(write=True) as conn:
+        conn.execute(
+            "UPDATE max_outbox SET status='sending',attempts=1,sending_at='2000-01-01T00:00:00+00:00'"
+        )
+    fake = FakeMaxClient()
+    assert asyncio.run(deliver_one(db, fake)) is True
+    with Database(db.path).connect() as conn:
+        row = dict(conn.execute('SELECT * FROM max_outbox').fetchone())
+    assert row['status'] == 'sent'
+    assert row['attempts'] == 2
+    assert len(fake.calls) == 1
+
+
+def test_outbox_does_not_retry_permanent_max_error(tmp_path):
+    db = queued_db(tmp_path)
+
+    class PermanentFailure(FakeMaxClient):
+        async def send_message(self, user_id, text, attachments):
+            raise MaxAPIError('invalid bot token', retryable=False)
+
+    assert asyncio.run(deliver_one(db, PermanentFailure())) is True
+    with Database(db.path).connect() as conn:
+        row = dict(conn.execute('SELECT * FROM max_outbox').fetchone())
+    assert row['status'] == 'failed'
+    assert row['retryable'] == 0
     assert asyncio.run(deliver_one(db, FakeMaxClient())) is False
 
 
