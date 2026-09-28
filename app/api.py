@@ -15,7 +15,7 @@ from .db import AsyncDatabase, token_hash
 from .models import AnnouncementCreate, Announcement, CommentCreate, GosuslugiResidencyClaim, Profile, StatusChange, Ticket, TicketCreate, TicketDetail
 from .analytics import house_metrics
 from .access import allowed_house_ids, can_access_house
-from .max_webhook import PRIORITY_LABELS, announce_incident, keyboard, parse_update, queue_message, save_dialog, similar_groups, store_update, verify_secret
+from .max_webhook import PRIORITY_LABELS, announce_incident, keyboard, linked_residents_for_house, parse_update, queue_message, save_dialog, similar_groups, store_update, verify_secret
 from .miniapp_auth import InvalidLaunchData, validate_launch_data
 from .miniapp_document import WEB_DIR, miniapp_response
 from .miniapp_login import redeem_code, session_user_id
@@ -101,8 +101,8 @@ def create_app(db_path: str | None = None):
                     'WHERE l.max_user_id=?', (max_user_id,),
                 )
                 row = await cursor.fetchone()
-            if row is None or row['role'] != 'operator':
-                raise HTTPException(403, 'Доступно только сотруднику УК')
+            if row is None:
+                raise HTTPException(403, 'Профиль не привязан к боту MAX')
             return dict(row)
         if credentials is None:
             raise HTTPException(401, 'Требуется авторизация', headers={'WWW-Authenticate': 'Bearer'})
@@ -236,11 +236,43 @@ def create_app(db_path: str | None = None):
 
     @app.get('/api/miniapp/overview')
     async def miniapp_overview(house_id: str | None = None, user=Depends(actor)):
+        if user['role'] == 'resident':
+            async with db.connect() as conn:
+                ids = await allowed_house_ids(conn, user)
+                if house_id is not None and house_id not in ids:
+                    raise HTTPException(404, 'Дом не найден в вашем профиле')
+                selected = house_id or (user['house_id'] if user['house_id'] in ids else (ids[0] if ids else None))
+                houses = []
+                if ids:
+                    marks = ','.join('?' for _ in ids)
+                    rows = await (await conn.execute(
+                        f'SELECT h.id,h.address,hd.district,uh.verification_method '
+                        f'FROM houses h LEFT JOIN house_districts hd ON hd.house_id=h.id '
+                        f'LEFT JOIN user_houses uh ON uh.house_id=h.id AND uh.user_id=? '
+                        f'WHERE h.id IN ({marks}) ORDER BY h.address', (user['id'], *ids),
+                    )).fetchall()
+                    houses = [dict(row) for row in rows]
+                tickets = []
+                announcements = []
+                if selected:
+                    tickets = [dict(row) for row in await (await conn.execute(
+                        'SELECT * FROM tickets WHERE resident_id=? AND house_id=? '
+                        'ORDER BY created_at DESC,id LIMIT 100', (user['id'], selected),
+                    )).fetchall()]
+                    announcements = [dict(row) for row in await (await conn.execute(
+                        'SELECT id,title,body,created_at,sent_at FROM announcements '
+                        'WHERE house_id=? ORDER BY created_at DESC LIMIT 30', (selected,),
+                    )).fetchall()]
+                return {
+                    'role': 'resident', 'resident': {'name': user['name']},
+                    'houses': houses, 'house_id': selected,
+                    'tickets': tickets, 'announcements': announcements,
+                }
         if user['role'] != 'operator':
             raise HTTPException(403, 'Доступно только сотруднику УК')
         async with db.connect() as conn:
             ids = await allowed_house_ids(conn, user)
-            selected = house_id or user['house_id']
+            selected = house_id or (user['house_id'] if user['house_id'] in ids else (ids[0] if ids else None))
             if selected not in ids:
                 raise HTTPException(404, 'Дом не найден')
             marks = ','.join('?' for _ in ids)
@@ -268,8 +300,13 @@ def create_app(db_path: str | None = None):
                 'SELECT id,title,created_at FROM announcements WHERE house_id=? '
                 'ORDER BY created_at DESC LIMIT 3', (selected,),
             )).fetchall()
+            district_row = await (await conn.execute(
+                'SELECT district FROM operator_districts WHERE user_id=?', (user['id'],),
+            )).fetchone()
             return {
-                'operator': {'name': user['name']}, 'houses': [dict(row) for row in rows],
+                'role': 'operator',
+                'operator': {'name': user['name'], 'district': district_row['district'] if district_row else None},
+                'houses': [dict(row) for row in rows],
                 'house_id': selected, 'metrics': metrics, 'tickets': tickets,
                 'signals': signals, 'announcements': [dict(row) for row in announcements],
             }
@@ -330,10 +367,13 @@ def create_app(db_path: str | None = None):
             raise HTTPException(403, 'Обращение создаёт житель')
         ticket_id, timestamp = str(uuid4()), now()
         async with db.connect(write=True) as conn:
+            selected_house = body.house_id or user['house_id']
+            if not await can_access_house(conn, user, selected_house):
+                raise HTTPException(404, 'Дом не найден в вашем профиле')
             await conn.execute(
                 'INSERT INTO tickets(id,house_id,resident_id,category,location,description,status,created_at,updated_at) '
                 "VALUES(?,?,?,?,?,?,'new',?,?)",
-                (ticket_id, user['house_id'], user['id'], body.category, body.location,
+                (ticket_id, selected_house, user['id'], body.category, body.location,
                  body.description, timestamp, timestamp),
             )
             await conn.execute('UPDATE tickets SET due_at=? WHERE id=?',
@@ -411,23 +451,17 @@ def create_app(db_path: str | None = None):
         """Оператор УК публикует объявление: бот мгновенно рассылает его всем жильцам дома в MAX."""
         if user['role'] != 'operator':
             raise HTTPException(403, 'Объявления создаёт сотрудник УК')
-        async with db.connect() as conn:
-            if not await can_access_house(conn, user, house_id):
-                raise HTTPException(404, 'Дом не найден')
         announcement_id = str(uuid4())
         timestamp = now()
         text = f'\U0001f4e3 Объявление от УК\n\n{body.title}\n\n{body.body}'
         async with db.connect(write=True) as conn:
+            if not await can_access_house(conn, user, house_id):
+                raise HTTPException(404, 'Дом не найден')
             await conn.execute(
                 'INSERT INTO announcements(id,house_id,title,body,created_by,created_at) VALUES(?,?,?,?,?,?)',
                 (announcement_id, house_id, body.title, body.body, user['id'], timestamp),
             )
-            # Найти всех жильцов дома с привязанным MAX-аккаунтом
-            cursor = await conn.execute(
-                "SELECT l.max_user_id FROM max_links l JOIN users u ON u.id=l.user_id WHERE u.house_id=? AND u.role='resident'",
-                (house_id,)
-            )
-            residents = await cursor.fetchall()
+            residents = await linked_residents_for_house(conn, house_id)
             for row in residents:
                 await queue_message(
                     conn, row['max_user_id'], text,

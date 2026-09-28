@@ -20,6 +20,7 @@ PUBLIC_GET = (
     re.compile(r'^/api/tickets/[^/]+$'),
 )
 PUBLIC_POST = (
+    re.compile(r'^/api/tickets$'),
     re.compile(r'^/api/miniapp/tickets/[^/]+/priority$'),
     re.compile(r'^/api/miniapp/incidents$'),
     re.compile(r'^/api/miniapp/login$'),

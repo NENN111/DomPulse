@@ -16,11 +16,11 @@
       }
     })();
   </script>
-  <title>ДомПульс — проблемы и показатели</title>
-  <link rel="stylesheet" href="/miniapp/assets/style.css?v=22a8e2d7fa">
+  <title>ДомПульс — мой дом</title>
+  <link rel="stylesheet" href="/miniapp/assets/style.css?v=b7081a8ead">
   <link rel="preconnect" href="https://st.max.ru">
   <script src="https://st.max.ru/js/max-web-app.js" defer></script>
-  <script src="/miniapp/assets/app.js?v=75a3a79035" defer></script>
+  <script src="/miniapp/assets/app.js?v=5a9d3c9ab9" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -33,29 +33,29 @@
   <div class="app-shell">
     <main class="main-content login-locked">
       <section id="login-panel" class="login-panel" aria-labelledby="login-title">
-        <h1 id="login-title">Проблемы и показатели</h1>
-        <p>Откройте приложение через новую кнопку в чате с ботом MAX.</p>
+        <h1 id="login-title">ДомПульс</h1>
+        <p>Откройте приложение из чата с ботом MAX.</p>
         <p id="login-error" class="login-error" role="alert" hidden></p>
       </section>
-      <section class="page-intro">
+      <div id="notice" class="notice" role="status" hidden></div>
+      <section class="page-intro operator-view">
         <h1>Проблемы и показатели</h1>
         <p id="operator-name">Загрузка данных…</p>
         <div class="house-row">
-          <label for="house-select">Дом</label>
-          <select id="house-select" aria-label="Выберите дом"></select>
+          <label for="house-select">Адрес в округе</label>
+          <select id="house-select" aria-label="Выберите адрес дома"></select>
           <button id="refresh-btn" class="icon-button" title="Обновить данные" aria-label="Обновить данные"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/></svg></button>
         </div>
       </section>
 
-      <nav class="tabs" aria-label="Разделы">
+      <nav class="tabs operator-view" aria-label="Разделы оператора">
         <button class="tab active" data-tab="queue" aria-current="page">Очередь <span id="queue-count" class="tab-count">0</span></button>
         <button class="tab" data-tab="signals">Общие проблемы <span id="signals-count" class="tab-count">0</span></button>
         <button class="tab" data-tab="metrics">Показатели</button>
       </nav>
 
-      <div id="notice" class="notice" role="status" hidden></div>
 
-      <section id="queue-panel" class="panel active" aria-label="Очередь дома">
+      <section id="queue-panel" class="operator-view panel active" aria-label="Очередь дома">
         <div class="section-heading"><div><h2>Очередь дома</h2></div><span id="queue-total" class="section-aside"></span></div>
         <div class="filters">
           <label class="search-field"><span class="sr-only">Поиск по заявкам</span><input id="ticket-search" type="search" placeholder="Найти по месту или описанию"></label>
@@ -64,15 +64,44 @@
         <div id="ticket-list" class="ticket-list"></div>
       </section>
 
-      <section id="signals-panel" class="panel" aria-label="Общие проблемы">
+      <section id="signals-panel" class="operator-view panel" aria-label="Общие проблемы">
         <div class="section-heading"><div><h2>Общие проблемы</h2></div></div>
         <p class="section-description">Похожие заявки требуют решения оператора. Подтверждайте общий инцидент, только если причина действительно одна.</p>
         <div id="signal-list" class="signal-list"></div>
       </section>
 
-      <section id="metrics-panel" class="panel" aria-label="Показатели дома">
+      <section id="metrics-panel" class="operator-view panel" aria-label="Показатели дома">
         <div class="section-heading"><div><h2>Показатели дома</h2></div><span class="section-aside">Данные обновляются при открытии</span></div>
         <div id="metrics-content"></div>
+      </section>
+
+      <section id="resident-app" hidden>
+        <div class="page-intro resident-intro">
+          <h1>Мой дом</h1>
+          <p id="resident-name">Загрузка данных…</p>
+          <div class="house-row">
+            <label for="resident-house-select">Адрес дома</label>
+            <select id="resident-house-select" aria-label="Выберите дом"></select>
+            <button id="resident-refresh-btn" class="icon-button" type="button" title="Обновить данные" aria-label="Обновить данные"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/></svg></button>
+          </div>
+        </div>
+        <nav class="tabs" aria-label="Разделы жителя">
+          <button class="tab active" data-resident-tab="requests" aria-current="page">Мои заявки <span id="resident-ticket-count" class="tab-count">0</span></button>
+          <button class="tab" data-resident-tab="announcements">Объявления <span id="resident-announcement-count" class="tab-count">0</span></button>
+          <button class="tab" data-resident-tab="home">О доме</button>
+        </nav>
+        <section id="resident-requests-panel" class="resident-panel active" aria-label="Мои заявки">
+          <div class="section-heading resident-section-heading"><h2>Мои заявки</h2><button id="new-ticket" class="primary-button" type="button">Сообщить о проблеме</button></div>
+          <div id="resident-ticket-list" class="ticket-list"></div>
+        </section>
+        <section id="resident-announcements-panel" class="resident-panel" aria-label="Объявления дома">
+          <div class="section-heading"><h2>Объявления дома</h2></div>
+          <div id="resident-announcement-list" class="ticket-list"></div>
+        </section>
+        <section id="resident-home-panel" class="resident-panel" aria-label="Информация о доме">
+          <div class="section-heading"><h2>Мой дом</h2></div>
+          <div id="resident-home-content"></div>
+        </section>
       </section>
     </main>
   </div>
@@ -80,6 +109,7 @@
   <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
   <aside id="ticket-drawer" class="ticket-drawer" aria-label="Карточка обращения" aria-hidden="true">
     <div class="drawer-header"><div><h2 id="drawer-title">Заявка</h2></div><button id="drawer-close" class="icon-button" aria-label="Закрыть карточку"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 5l14 14M19 5L5 19"/></svg></button></div>
+    <div id="drawer-notice" class="notice" role="status" hidden></div>
     <div id="drawer-content" class="drawer-content"></div>
   </aside>
 </body>

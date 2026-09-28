@@ -1097,3 +1097,98 @@ def test_operator_announcement_keeps_current_navigation(max_app):
     text, buttons = send('announcement-cancel', 'Отмена')
     assert text.startswith('Действие отменено.')
     assert buttons[0][0]['type'] == 'open_app'
+
+
+def test_operator_profile_and_announcement_use_selected_district_house(max_app):
+    client, db = max_app
+    headers = {'X-Max-Bot-Api-Secret': 'test-webhook-secret'}
+    enroll(client, db, headers, 7721, role='operator', house_id='district-one')
+    enroll(client, db, headers, 7722, house_id='district-two')
+    enroll(client, db, headers, 7723, house_id='district-three')
+    with db.connect(write=True) as conn:
+        conn.executemany('UPDATE houses SET address=? WHERE id=?', [
+            ('Москва, Первая улица, дом 1', 'district-one'),
+            ('Москва, Вторая улица, дом 2', 'district-two'),
+            ('Москва, Третья улица, дом 3', 'district-three'),
+        ])
+        conn.executemany('INSERT INTO house_districts(house_id,district) VALUES(?,?)', [
+            ('district-one', 'ЦАО'), ('district-two', 'ЦАО'),
+            ('district-three', 'САО'),
+        ])
+    db.initialize()
+
+    def send(mid, value):
+        response = client.post('/webhooks/max', headers=headers, json=update(mid, value, 7721))
+        assert response.status_code == 200
+        with db.connect() as conn:
+            return conn.execute(
+                'SELECT text FROM max_outbox WHERE max_user_id=7721 ORDER BY id DESC LIMIT 1'
+            ).fetchone()['text']
+
+    profile = send('district-profile', 'Мой профиль и округ')
+    assert 'Округ: ЦАО' in profile
+    assert 'Дом:' not in profile
+    assert 'Мой профиль и дом' not in profile
+
+    prompt = send('district-start', 'Создать объявление')
+    assert 'Выберите дом' in prompt
+    with db.connect() as conn:
+        address = conn.execute(
+            "SELECT address FROM houses WHERE id='district-two'"
+        ).fetchone()['address']
+    assert 'Введите заголовок' in send('district-select', address)
+    send('district-title', 'Работы в доме')
+    preview = send('district-body', 'Завтра будут проверять трубы в подвале.')
+    assert address in preview
+    assert 'Отправить всем жильцам' not in send('district-send', 'Отправить всем жильцам')
+    with db.connect() as conn:
+        row = conn.execute('SELECT house_id FROM announcements').fetchone()
+        assert row['house_id'] == 'district-two'
+        recipients = conn.execute(
+            "SELECT max_user_id FROM max_outbox WHERE text LIKE 'Объявление от УК%'"
+        ).fetchall()
+        assert [row['max_user_id'] for row in recipients] == [7722]
+
+
+def test_operator_logout_button_revokes_max_link_and_miniapp_session(max_app):
+    client, db = max_app
+    headers = {'X-Max-Bot-Api-Secret': 'test-webhook-secret'}
+    max_id = 8841
+    enroll(client, db, headers, max_id, role='operator')
+    session_token = 'operator-miniapp-session'
+    with db.connect(write=True) as conn:
+        conn.execute(
+            'INSERT INTO miniapp_sessions(token_hash,max_user_id,expires_at,created_at) VALUES(?,?,?,?)',
+            (token_hash(session_token), max_id, '2099-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00'),
+        )
+        conn.execute(
+            'INSERT INTO miniapp_login_codes(code_hash,max_user_id,expires_at,created_at) VALUES(?,?,?,?)',
+            (token_hash('unused-code'), max_id, '2099-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00'),
+        )
+    assert client.get('/api/miniapp/overview', headers={'X-Miniapp-Session': session_token}).status_code == 200
+
+    def send(mid, text):
+        response = client.post('/webhooks/max', headers=headers, json=update(mid, text, max_id))
+        assert response.status_code == 200
+        with db.connect() as conn:
+            return conn.execute('SELECT text,attachments_json FROM max_outbox WHERE max_user_id=? ORDER BY id DESC LIMIT 1',
+                                (max_id,)).fetchone()
+
+    menu_reply = send('logout-menu', '/start')
+    buttons = json.loads(menu_reply['attachments_json'])[0]['payload']['buttons']
+    assert any(button['text'] == 'Выйти из аккаунта' for row in buttons for button in row)
+    assert 'Для повторного входа' in send('logout-ask', 'Выйти из аккаунта')['text']
+    with db.connect() as conn:
+        assert conn.execute('SELECT 1 FROM max_links WHERE max_user_id=?', (max_id,)).fetchone()
+    send('logout-cancel', 'Отмена')
+    assert client.get('/api/miniapp/overview', headers={'X-Miniapp-Session': session_token}).status_code == 200
+
+    send('logout-ask-again', 'Выйти из аккаунта')
+    assert 'Вы вышли' in send('logout-confirm', 'Подтвердить выход')['text']
+    with db.connect() as conn:
+        assert not conn.execute('SELECT 1 FROM max_links WHERE max_user_id=?', (max_id,)).fetchone()
+        assert not conn.execute('SELECT 1 FROM miniapp_sessions WHERE max_user_id=?', (max_id,)).fetchone()
+        assert not conn.execute('SELECT 1 FROM miniapp_login_codes WHERE max_user_id=?', (max_id,)).fetchone()
+        assert conn.execute("SELECT 1 FROM users WHERE id=?", (f'max-operator-{max_id}',)).fetchone()
+    assert client.get('/api/miniapp/overview', headers={'X-Miniapp-Session': session_token}).status_code == 401
+    assert '/код' in send('logout-start', '/start')['text']

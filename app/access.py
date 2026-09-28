@@ -11,7 +11,10 @@ async def allowed_house_ids(conn, user):
             return [row['house_id'] for row in memberships if row['revoked_at'] is None]
         return [user['house_id']]
     cur = await conn.execute('SELECT h.id FROM houses h JOIN house_districts hd ON hd.house_id=h.id JOIN operator_districts od ON od.district=hd.district WHERE od.user_id=?', (user['id'],))
-    return sorted({user['house_id'], *(row['id'] for row in await cur.fetchall())})
+    district_houses = sorted({row['id'] for row in await cur.fetchall()})
+    if await operator_districts(conn, user):
+        return district_houses
+    return [user['house_id']]  # Совместимость со старыми базами без округа.
 async def can_access_house(conn, user, house_id): return house_id in await allowed_house_ids(conn, user)
 async def operator_districts(conn, user):
     cur = await conn.execute('SELECT district FROM operator_districts WHERE user_id=? ORDER BY district', (user['id'],))

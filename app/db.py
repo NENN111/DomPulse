@@ -24,7 +24,6 @@ CREATE TABLE IF NOT EXISTS house_districts (house_id TEXT PRIMARY KEY REFERENCES
 CREATE INDEX IF NOT EXISTS idx_house_districts_district ON house_districts(district);
 CREATE TABLE IF NOT EXISTS operator_districts (user_id TEXT NOT NULL REFERENCES users(id), district TEXT NOT NULL, PRIMARY KEY(user_id,district));
 CREATE INDEX IF NOT EXISTS idx_operator_districts_district ON operator_districts(district);
-CREATE UNIQUE INDEX IF NOT EXISTS uq_operator_district ON operator_districts(district);
 CREATE TABLE IF NOT EXISTS users (
  id TEXT PRIMARY KEY, name TEXT NOT NULL,
  role TEXT NOT NULL CHECK(role IN ('resident', 'operator')),
@@ -199,6 +198,31 @@ CREATE TABLE IF NOT EXISTS announcements (
 CREATE INDEX IF NOT EXISTS announcements_house ON announcements(house_id, created_at);
 """
 
+OPERATOR_DISTRICT_MIGRATION = """
+DROP INDEX IF EXISTS uq_operator_district;
+DELETE FROM operator_districts
+WHERE rowid NOT IN (
+ SELECT rowid FROM (
+  SELECT od.rowid,
+   ROW_NUMBER() OVER (
+    PARTITION BY od.user_id
+    ORDER BY CASE WHEN od.district = (
+     SELECT hd.district FROM users u
+     JOIN house_districts hd ON hd.house_id=u.house_id
+     WHERE u.id=od.user_id
+    ) THEN 0 ELSE 1 END, od.rowid
+   ) AS rank
+  FROM operator_districts od
+ ) WHERE rank=1
+);
+INSERT OR IGNORE INTO operator_districts(user_id,district)
+SELECT u.id,hd.district FROM users u
+JOIN house_districts hd ON hd.house_id=u.house_id
+WHERE u.role='operator'
+ AND NOT EXISTS (SELECT 1 FROM operator_districts od WHERE od.user_id=u.id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_operator_user_district ON operator_districts(user_id);
+"""
+
 TICKET_MIGRATIONS = {
     'priority': "ALTER TABLE tickets ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'",
     'due_at': 'ALTER TABLE tickets ADD COLUMN due_at TEXT',
@@ -227,6 +251,7 @@ class Database:
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            conn.executescript(OPERATOR_DISTRICT_MIGRATION)
             conn.execute(HOUSE_MEMBERSHIP_BACKFILL)
             columns = {row['name'] for row in conn.execute('PRAGMA table_info(tickets)').fetchall()}
             for column, statement in TICKET_MIGRATIONS.items():
@@ -266,6 +291,7 @@ class AsyncDatabase:
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         async with self.connect() as conn:
             await conn.executescript(SCHEMA)
+            await conn.executescript(OPERATOR_DISTRICT_MIGRATION)
             await conn.execute(HOUSE_MEMBERSHIP_BACKFILL)
             cursor = await conn.execute('PRAGMA table_info(tickets)')
             columns = {row['name'] for row in await cursor.fetchall()}

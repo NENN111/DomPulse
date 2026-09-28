@@ -22,6 +22,7 @@ class Status(str, Enum):
 
 
 class TicketCreate(Input):
+    house_id: str | None = None
     category: Literal[
         'heating', 'water', 'electricity', 'elevator', 'cleaning', 'yard', 'other'
     ] = 'other'

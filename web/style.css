@@ -142,7 +142,7 @@ input::placeholder, textarea::placeholder { color: #8992a3; }
 .event-list li { padding: 4px 0 11px 7px; color: #5e697e; font-size: 12px; line-height: 1.45; }
 .event-list small { display: block; margin-top: 3px; color: #9099a8; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
-.login-locked .page-intro, .login-locked .tabs, .login-locked .panel, .login-locked .notice { display: none; }
+.login-locked .page-intro, .login-locked .tabs, .login-locked .panel, .login-locked .notice, .login-locked #resident-app { display: none; }
 .login-panel { display: none; max-width: 430px; margin: 48px auto; padding: 29px; background: #fff; border: 1px solid var(--line); border-radius: var(--radius); }
 .login-locked .login-panel { display: block; }
 .login-panel h1 { margin: 9px 0 12px; font-size: 27px; letter-spacing: -.03em; }
@@ -383,3 +383,139 @@ html[data-theme="dark"] .login-panel input { background: #292f3b; border-color: 
   .theme-toggle { min-height: 44px; }
   .form-block .mobile-select-trigger { margin-bottom: 9px; }
 }
+.house-row #house-select[data-mobile-enhanced], .house-row #resident-house-select[data-mobile-enhanced] { display: none; }
+.house-row .mobile-select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  padding: 9px 12px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 14px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+}
+.house-row .mobile-select-trigger span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.house-row .mobile-select-trigger i {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin: -4px 3px 0 0;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: rotate(45deg);
+}
+.house-row .mobile-select-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.select-sheet-search { padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.select-sheet-search input {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 16px;
+}
+.select-sheet-empty { margin: 0; padding: 18px 20px; color: var(--muted); font-size: 14px; }
+@media (min-width: 701px) {
+  .select-sheet { display: block; position: fixed; inset: 0; z-index: 20; }
+  .select-sheet-backdrop { position: absolute; inset: 0; }
+  .select-sheet-panel {
+    position: fixed;
+    top: var(--sheet-top);
+    left: var(--sheet-left);
+    width: var(--sheet-width);
+    max-height: min(420px, calc(100dvh - 20px));
+    overflow: hidden;
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    box-shadow: 0 12px 32px #10162826;
+  }
+  .select-sheet-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 50px;
+    padding: 7px 12px 7px 16px;
+    border-bottom: 1px solid var(--line);
+  }
+  .select-sheet-header h2 { margin: 0; font-size: 14px; }
+  .select-sheet-close {
+    width: 34px;
+    height: 34px;
+    flex: none;
+    color: var(--muted);
+    background: transparent;
+    border: 0;
+    border-radius: 8px;
+    font-size: 24px;
+    cursor: pointer;
+  }
+  .select-sheet-options { max-height: 280px; overflow-y: auto; overscroll-behavior: contain; }
+  .select-sheet-option {
+    display: block;
+    width: 100%;
+    min-height: 42px;
+    padding: 9px 16px;
+    color: var(--text);
+    background: var(--panel);
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    font-size: 14px;
+    line-height: 1.4;
+    text-align: left;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+  }
+  .select-sheet-option[aria-current="true"] { color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+  .select-sheet-option:last-child { border-bottom: 0; }
+}
+@media (max-width: 700px) {
+  .house-row .mobile-select-trigger { min-height: 44px; }
+  .select-sheet-search:not([hidden]) + .select-sheet-options { max-height: calc(min(70dvh, 540px) - 120px - env(safe-area-inset-bottom)); }
+}
+
+/* Житель использует те же поверхности, карточки и боковую панель, что и оператор. */
+.resident-panel { display: none; padding-top: 28px; }
+.resident-panel.active { display: block; }
+.resident-intro { padding-bottom: 25px; }
+.resident-section-heading { align-items: center; }
+.announcement-card { grid-template-columns: minmax(0,1fr); }
+.announcement-card p { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.home-details { max-width: 760px; }
+.home-details .detail-line:first-child { padding-top: 0; }
+.home-details .section-description { margin: 18px 0 0; }
+.resident-form { display: grid; gap: 9px; }
+.resident-form label, .form-block label { display: block; margin-top: 10px; font-size: 13px; font-weight: 600; }
+.resident-form input, .resident-form select, .resident-form textarea { width: 100%; }
+.resident-form input { min-height: 42px; padding: 9px 12px; }
+.resident-form textarea { min-height: 128px; padding: 10px 12px; resize: vertical; }
+.resident-form .primary-button { justify-self: start; margin-top: 8px; }
+.form-hint, .drawer-context { margin: 0 0 15px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.resident-form .form-hint { margin: 0; }
+.inline-confirm { margin-top: 10px; padding: 15px; border: 1px solid var(--line); border-radius: 10px; background: var(--accent-soft); }
+.inline-confirm p { margin: 0 0 11px; font-size: 14px; }
+.inline-confirm button + button { margin-left: 8px; }
+.announcement-body { white-space: pre-wrap; }
+@media (max-width:700px) {
+  .resident-panel { padding-top: 24px; }
+  .resident-section-heading { align-items: stretch; flex-direction: column; }
+  .resident-section-heading .primary-button { width: 100%; min-height: 44px; }
+  .resident-form .primary-button { width: 100%; min-height: 44px; }
+}
+
+.ticket-drawer .notice { flex: none; margin: 10px 17px 0; }

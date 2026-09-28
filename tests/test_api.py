@@ -109,7 +109,7 @@ def test_auth_and_validation(client):
     body={'location':'  ', 'description':'              '}
     assert client.post('/api/tickets',headers=headers('alice'),json=body).status_code == 422
     body={'location':'Квартира 1','description':'Достаточное описание проблемы','house_id':'h2'}
-    assert client.post('/api/tickets',headers=headers('alice'),json=body).status_code == 422
+    assert client.post('/api/tickets',headers=headers('alice'),json=body).status_code == 404
     assert client.post('/api/tickets',headers=headers('staff'),json={
         'location':'Квартира 1','description':'Достаточное описание проблемы'}).status_code == 403
     assert client.get('/api/metrics/house', headers=headers('alice')).status_code == 403

@@ -1,23 +1,59 @@
-"""Настройка округов Москвы для домов и операторов."""
+"""Настройка одного округа для оператора и округа для каждого дома."""
 import argparse
+
 from .access import MOSCOW_DISTRICTS
 from .db import Database
 
+
 def main():
-    p=argparse.ArgumentParser(description="Настроить округа Москвы для домов и операторов")
-    p.add_argument('--db',required=True,help='Путь к SQLite-базе'); p.add_argument('--house-id'); p.add_argument('--district',action='append',choices=MOSCOW_DISTRICTS); p.add_argument('--operator-id'); p.add_argument('--list',action='store_true')
-    a=p.parse_args(); db=Database(a.db); db.initialize()
-    with db.connect(write=True) as c:
-        if a.house_id and a.district:
-            if not c.execute('SELECT 1 FROM houses WHERE id=?',(a.house_id,)).fetchone(): raise SystemExit(f'Дом не найден: {a.house_id}')
-            c.execute('INSERT INTO house_districts(house_id,district) VALUES(?,?) ON CONFLICT(house_id) DO UPDATE SET district=excluded.district',(a.house_id,a.district[0]))
-        if a.operator_id and a.district:
-            u=c.execute('SELECT id,role FROM users WHERE id=?',(a.operator_id,)).fetchone()
-            if not u or u['role']!='operator': raise SystemExit(f'Оператор не найден: {a.operator_id}')
-            c.execute('DELETE FROM operator_districts WHERE user_id=?',(a.operator_id,)); c.executemany('INSERT INTO operator_districts(user_id,district) VALUES(?,?)',[(a.operator_id,d) for d in dict.fromkeys(a.district)])
-        if a.list:
-            for r in c.execute("SELECT h.id,COALESCE(d.district,'Округ не указан') district,h.address FROM houses h LEFT JOIN house_districts d ON d.house_id=h.id ORDER BY h.id").fetchall(): print(f"{r['id']}: {r['district']} — {r['address']}")
-        if not a.list and not a.house_id and not a.operator_id: p.error('укажите --house-id/--operator-id или --list')
-    if a.house_id and a.district: print(f"Дом {a.house_id} привязан к округу {a.district[0]}.")
-    if a.operator_id and a.district: print(f"Оператор {a.operator_id} ведёт округа: {', '.join(dict.fromkeys(a.district))}.")
-if __name__=='__main__': main()
+    parser = argparse.ArgumentParser(description='Настроить округа Москвы для домов и операторов')
+    parser.add_argument('--db', required=True, help='Путь к SQLite-базе')
+    parser.add_argument('--house-id')
+    parser.add_argument('--operator-id')
+    parser.add_argument('--district', choices=MOSCOW_DISTRICTS)
+    parser.add_argument('--list', action='store_true')
+    args = parser.parse_args()
+
+    if (args.house_id or args.operator_id) and not args.district:
+        parser.error('для назначения дома или оператора укажите --district')
+    if not args.list and not args.house_id and not args.operator_id:
+        parser.error('укажите --house-id, --operator-id или --list')
+
+    db = Database(args.db)
+    db.initialize()
+    with db.connect(write=True) as conn:
+        if args.house_id:
+            if not conn.execute('SELECT 1 FROM houses WHERE id=?', (args.house_id,)).fetchone():
+                raise SystemExit(f'Дом не найден: {args.house_id}')
+            conn.execute(
+                'INSERT INTO house_districts(house_id,district) VALUES(?,?) '
+                'ON CONFLICT(house_id) DO UPDATE SET district=excluded.district',
+                (args.house_id, args.district),
+            )
+        if args.operator_id:
+            user = conn.execute(
+                'SELECT role FROM users WHERE id=?', (args.operator_id,),
+            ).fetchone()
+            if not user or user['role'] != 'operator':
+                raise SystemExit(f'Оператор не найден: {args.operator_id}')
+            conn.execute(
+                'INSERT INTO operator_districts(user_id,district) VALUES(?,?) '
+                'ON CONFLICT(user_id) DO UPDATE SET district=excluded.district',
+                (args.operator_id, args.district),
+            )
+        if args.list:
+            rows = conn.execute(
+                "SELECT h.id,COALESCE(d.district,'Округ не указан') AS district,h.address "
+                'FROM houses h LEFT JOIN house_districts d ON d.house_id=h.id ORDER BY h.id'
+            ).fetchall()
+            for row in rows:
+                print(f"{row['id']}: {row['district']} — {row['address']}")
+
+    if args.house_id:
+        print(f'Дом {args.house_id} привязан к округу {args.district}.')
+    if args.operator_id:
+        print(f'Оператор {args.operator_id} ведёт округ: {args.district}.')
+
+
+if __name__ == '__main__':
+    main()

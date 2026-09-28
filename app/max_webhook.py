@@ -11,7 +11,7 @@ from uuid import uuid4
 from fastapi import HTTPException, Request
 
 from .db import AsyncDatabase, token_hash
-from .access import MOSCOW_DISTRICTS
+from .access import MOSCOW_DISTRICTS, allowed_house_ids
 from .sla import calculate_due_at
 from .residency import begin_verified_link, display_name, normalize_house_address
 from .geocoder import GeocoderError, geocode_address
@@ -122,14 +122,14 @@ def menu(role: str = 'resident') -> tuple[str, list[dict[str, Any]]]:
     if role == 'operator':
         app_button = {'type': 'open_app', 'text': 'Проблемы и показатели', 'web_app': os.getenv('MAX_BOT_USERNAME', '').strip()}
         return (
-            'ДомПульс: рабочее место диспетчера УК. Откройте проблемы и показатели дома.',
+            'ДомПульс: рабочее место диспетчера УК. Откройте проблемы и показатели домов округа.',
             [{
                 'type': 'inline_keyboard',
                 'payload': {'buttons': [
                     [app_button],
                     [{'type': 'message', 'text': 'Создать объявление'}],
-                    [{'type': 'message', 'text': 'Мой профиль и дом'}],
-                    [{'type': 'message', 'text': 'Информация об УК'}],
+                    [{'type': 'message', 'text': 'Мой профиль и округ'}],
+                    [{'type': 'message', 'text': 'Выйти из аккаунта'}],
                 ]},
             }],
         )
@@ -260,7 +260,7 @@ async def enroll_with_code(conn, user_id: int, payload: dict[str, Any], code: st
         cursor = await conn.execute('SELECT district FROM house_districts WHERE house_id=?', (enrollment['house_id'],))
         district = await cursor.fetchone()
         if district:
-            await conn.execute('INSERT OR IGNORE INTO operator_districts(user_id,district) VALUES(?,?)', (internal_id, district['district']))
+            await conn.execute('INSERT INTO operator_districts(user_id,district) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET district=excluded.district', (internal_id, district['district']))
     await conn.execute('UPDATE enrollment_codes SET used_count=used_count+1 WHERE id=?', (enrollment['id'],))
     await conn.execute('DELETE FROM max_link_attempts WHERE max_user_id=?', (user_id,))
     return await linked_user(conn, user_id), None
@@ -366,6 +366,22 @@ async def profile_and_house(conn, user_id: int):
         verification = 'ранее созданная привязка'
 
     role = 'житель' if profile['role'] == 'resident' else 'диспетчер УК'
+    if profile['role'] == 'operator':
+        district_row = await (await conn.execute(
+            'SELECT district FROM operator_districts WHERE user_id=('
+            'SELECT user_id FROM max_links WHERE max_user_id=?)', (user_id,),
+        )).fetchone()
+        district = district_row['district'] if district_row else profile['district'] or 'не указан'
+        lines = [
+            'Мой профиль и округ',
+            f"Имя: {profile['name']}",
+            f'Роль: {role}',
+            f'Округ: {district}',
+            f'Способ привязки: {verification}',
+            f"Профиль привязан: {format_datetime(profile['linked_at'])}",
+        ]
+        return '\n'.join(lines), keyboard([['Назад']])
+
     district = profile['district'] or 'не указан'
     lines = [
         'Мой профиль и дом',
@@ -379,12 +395,9 @@ async def profile_and_house(conn, user_id: int):
     verified_at = profile['house_verified_at'] or profile['verified_at']
     if verified_at:
         lines.append(f"Адрес подтверждён: {format_datetime(verified_at)}")
-
-    buttons = [['Информация об УК']]
-    if profile['role'] == 'resident':
-        buttons.extend([['Мои дома'], ['Сообщить о проблеме']])
-    buttons.append(['Назад'])
-    return '\n'.join(lines), keyboard(buttons)
+    return '\n'.join(lines), keyboard([
+        ['Информация об УК'], ['Мои дома'], ['Сообщить о проблеме'], ['Назад'],
+    ])
 
 
 async def houses_menu(conn, user, user_id: int, timestamp: str):
@@ -634,6 +647,35 @@ def unlinked_menu() -> tuple[str, list[dict[str, Any]]]:
     )
 
 
+async def announcement_houses(conn, user):
+    ids = await allowed_house_ids(conn, user)
+    if not ids:
+        return []
+    marks = ','.join('?' for _ in ids)
+    rows = await (await conn.execute(
+        f'SELECT id,address FROM houses WHERE id IN ({marks}) ORDER BY address', ids,
+    )).fetchall()
+    return [dict(row) for row in rows]
+
+
+async def linked_residents_for_house(conn, house_id):
+    cursor = await conn.execute(
+        'SELECT DISTINCT l.max_user_id FROM max_links l '
+        "JOIN users u ON u.id=l.user_id WHERE u.role='resident' AND ("
+        'EXISTS (SELECT 1 FROM user_houses uh WHERE uh.user_id=u.id '
+        'AND uh.house_id=? AND uh.revoked_at IS NULL) OR '
+        '(u.house_id=? AND NOT EXISTS (SELECT 1 FROM user_houses uh '
+        'WHERE uh.user_id=u.id)))',
+        (house_id, house_id),
+    )
+    return await cursor.fetchall()
+
+
+async def announcement_house_keyboard(conn, user):
+    houses = await announcement_houses(conn, user)
+    return keyboard([[house['address']] for house in houses[:8]] + [['Назад']])
+
+
 def district_keyboard() -> list[dict[str, Any]]:
     rows = [list(MOSCOW_DISTRICTS[index:index + 3]) for index in range(0, 9, 3)]
     rows.extend([[district] for district in MOSCOW_DISTRICTS[9:]])
@@ -776,11 +818,14 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
         return menu(user['role'])
     if text == 'Назад':
         if user['role'] == 'operator' and state == 'announcement_confirm':
-            await save_dialog(conn, user_id, 'announcement_body', {'title': draft.get('title', '')}, timestamp)
+            await save_dialog(conn, user_id, 'announcement_body', {key: value for key, value in draft.items() if key != 'body'}, timestamp)
             return 'Теперь напишите текст объявления. Опишите все подробности.', keyboard([['Назад']])
         if user['role'] == 'operator' and state == 'announcement_body':
-            await save_dialog(conn, user_id, 'announcement_title', {}, timestamp)
-            return 'Введите заголовок объявления (3-200 символов).', keyboard([['Назад']])
+            await save_dialog(conn, user_id, 'announcement_title', draft, timestamp)
+            return 'Введите заголовок объявления (3-200 символов).\nПосле публикации объявление увидят все жители выбранного дома.', keyboard([['Назад']])
+        if user['role'] == 'operator' and state == 'announcement_title' and draft.get('choose_house'):
+            await save_dialog(conn, user_id, 'announcement_house', {}, timestamp)
+            return 'Выберите адрес дома для объявления.', await announcement_house_keyboard(conn, user)
         await save_dialog(conn, user_id, 'idle', {}, timestamp)
         return menu(user['role'])
     if text == 'Отмена':
@@ -897,10 +942,29 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
         )
     if text in {'Информация об УК', 'О доме и УК'}:
         await save_dialog(conn, user_id, 'idle', {}, timestamp)
+        if user['role'] == 'operator':
+            return 'Сведения об УК доступны жителям дома.', menu('operator')[1]
         return await house_and_management_info(conn, user)
-    if text == 'Мой профиль и дом':
+    if text in {'Мой профиль и дом', 'Мой профиль и округ'}:
         await save_dialog(conn, user_id, 'idle', {}, timestamp)
         return await profile_and_house(conn, user_id)
+    if user['role'] == 'operator' and text == 'Выйти из аккаунта':
+        await save_dialog(conn, user_id, 'operator_logout_confirm', {}, timestamp)
+        return (
+            'Выйти из аккаунта оператора? Доступ к Mini App прекратится. Для повторного входа понадобится новый код УК.',
+            keyboard([['Подтвердить выход'], ['Отмена']]),
+        )
+    if user['role'] == 'operator' and state == 'operator_logout_confirm':
+        if text != 'Подтвердить выход':
+            return 'Подтвердите выход или нажмите «Отмена».', keyboard([['Подтвердить выход'], ['Отмена']])
+        await conn.execute('DELETE FROM miniapp_sessions WHERE max_user_id=?', (user_id,))
+        await conn.execute('DELETE FROM miniapp_login_codes WHERE max_user_id=?', (user_id,))
+        await conn.execute("DELETE FROM max_outbox WHERE max_user_id=? AND status IN ('pending','sending')", (user_id,))
+        await conn.execute('DELETE FROM max_links WHERE max_user_id=?', (user_id,))
+        await save_dialog(conn, user_id, 'idle', {}, timestamp)
+        return 'Вы вышли из аккаунта оператора. Для повторного входа введите новый код УК.', unlinked_menu()[1]
+    if user['role'] == 'operator' and text == 'Подтвердить выход':
+        return menu('operator')
     if user['role'] == 'operator':
         legacy_state = state.startswith('operator_') or state == 'incident_confirm'
         legacy_text = (
@@ -917,38 +981,49 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
             reply, attachments = menu('operator')
             return 'Откройте мини-приложение кнопкой ниже.\n\n' + reply, attachments
         if text == 'Создать объявление':
-            await save_dialog(conn, user_id, 'announcement_title', {}, timestamp)
-            return 'Введите заголовок объявления (3-200 символов).', keyboard([['Назад']])
+            houses = await announcement_houses(conn, user)
+            if not houses:
+                return 'В вашем округе пока нет доступных домов.', menu('operator')[1]
+            if len(houses) > 1:
+                await save_dialog(conn, user_id, 'announcement_house', {}, timestamp)
+                return 'Выберите дом для объявления. Можно ввести адрес вручную.', await announcement_house_keyboard(conn, user)
+            await save_dialog(conn, user_id, 'announcement_title', {'house_id': houses[0]['id'], 'address': houses[0]['address']}, timestamp)
+            return 'Введите заголовок объявления (3-200 символов).\nПосле публикации объявление увидят все жители выбранного дома.', keyboard([['Назад']])
+        if state == 'announcement_house':
+            houses = await announcement_houses(conn, user)
+            matching = [house for house in houses if normalize_house_address(house['address']) == normalize_house_address(text)]
+            if len(matching) != 1:
+                return 'Адрес не найден среди домов вашего округа. Выберите кнопку или введите адрес как в Mini App.', await announcement_house_keyboard(conn, user)
+            house = matching[0]
+            await save_dialog(conn, user_id, 'announcement_title', {'house_id': house['id'], 'address': house['address'], 'choose_house': True}, timestamp)
+            return f"Дом: {house['address']}\nВведите заголовок объявления (3-200 символов).\nПосле публикации объявление увидят все жители выбранного дома.", keyboard([['Назад']])
         if state == 'announcement_title':
             if not 3 <= len(text) <= 200:
                 return 'Заголовок должен содержать от 3 до 200 символов.', keyboard([['Назад']])
-            await save_dialog(conn, user_id, 'announcement_body', {'title': text}, timestamp)
+            await save_dialog(conn, user_id, 'announcement_body', {**draft, 'title': text}, timestamp)
             return 'Теперь напишите текст объявления. Опишите все подробности.', keyboard([['Назад']])
         if state == 'announcement_body':
             if not 5 <= len(text) <= 4000:
                 return 'Текст должен содержать от 5 до 4000 символов.', keyboard([['Назад']])
             await save_dialog(conn, user_id, 'announcement_confirm', {**draft, 'body': text}, timestamp)
             return (
-                f"Проверьте объявление перед отправкой:\n\n"
+                f"Проверьте объявление для дома {draft.get('address', 'не указан')}:\n\n"
                 f"{draft.get('title', '')}\n{text}"
             ), keyboard([['Отправить всем жильцам'], ['Назад']])
         if state == 'announcement_confirm' and text == 'Отправить всем жильцам':
             title = draft.get('title', '')
             body = draft.get('body', '')
-            if not title or not body:
+            house_id = draft.get('house_id')
+            if not title or not body or house_id not in await allowed_house_ids(conn, user):
                 await save_dialog(conn, user_id, 'idle', {}, timestamp)
-                return 'Ошибка чтения данных. Начните снова.', menu('operator')[1]
+                return 'Дом или данные объявления больше не доступны. Начните снова.', menu('operator')[1]
             announcement_id = str(uuid4())
             msg_text = f'Объявление от УК\n\n{title}\n\n{body}'
             await conn.execute(
                 'INSERT INTO announcements(id,house_id,title,body,created_by,created_at) VALUES(?,?,?,?,?,?)',
-                (announcement_id, user['house_id'], title, body, user['id'], timestamp),
+                (announcement_id, house_id, title, body, user['id'], timestamp),
             )
-            res_cursor = await conn.execute(
-                "SELECT l.max_user_id FROM max_links l JOIN users u ON u.id=l.user_id WHERE u.house_id=? AND u.role='resident'",
-                (user['house_id'],)
-            )
-            residents = await res_cursor.fetchall()
+            residents = await linked_residents_for_house(conn, house_id)
             for row in residents:
                 await queue_message(
                     conn, row['max_user_id'], msg_text,

@@ -64,7 +64,7 @@ def test_operator_miniapp_uses_linked_role_and_house(tmp_path, monkeypatch):
     with TestClient(create_app(str(tmp_path / 'miniapp.db'))) as client:
         assert client.get('/miniapp').status_code == 200
         assert client.get('/api/miniapp/overview').status_code == 401
-        assert client.get('/api/miniapp/overview', headers={'X-Max-Init-Data': signed_data(102)}).status_code == 403
+        assert client.get('/api/miniapp/overview', headers={'X-Max-Init-Data': signed_data(102)}).json()['role'] == 'resident'
         headers = {'X-Max-Init-Data': signed_data(101)}
         overview = client.get('/api/miniapp/overview', headers=headers)
         assert overview.status_code == 200
@@ -157,3 +157,152 @@ def test_public_code_login_is_single_use_and_role_scoped(tmp_path, monkeypatch):
             conn.execute('UPDATE miniapp_sessions SET expires_at=? WHERE token_hash=?',
                          ('2000-01-01T00:00:00+00:00', token_hash(token)))
         assert client.get('/api/miniapp/overview', headers=headers).status_code == 401
+import sqlite3
+
+import pytest
+
+
+def test_operator_district_migration_keeps_one_district_and_allows_colleagues(tmp_path):
+    db = Database(str(tmp_path / 'districts.db'))
+    db.initialize()
+    with db.connect(write=True) as conn:
+        conn.executemany('INSERT INTO houses(id,address) VALUES(?,?)', [
+            ('one', 'Москва, Дом 1'), ('two', 'Москва, Дом 2'),
+        ])
+        conn.executemany('INSERT INTO house_districts(house_id,district) VALUES(?,?)', [
+            ('one', 'ЦАО'), ('two', 'САО'),
+        ])
+        conn.executemany('INSERT INTO users(id,name,role,house_id,token_hash) VALUES(?,?,?,?,?)', [
+            ('first', 'Первый', 'operator', 'one', token_hash('first-token')),
+            ('second', 'Второй', 'operator', 'one', token_hash('second-token')),
+        ])
+        conn.execute('DROP INDEX uq_operator_user_district')
+        conn.execute('CREATE UNIQUE INDEX uq_operator_district ON operator_districts(district)')
+        conn.executemany('INSERT INTO operator_districts(user_id,district) VALUES(?,?)', [
+            ('first', 'САО'), ('first', 'ЦАО'),
+        ])
+    db.initialize()
+    with db.connect() as conn:
+        assignments = conn.execute(
+            'SELECT user_id,district FROM operator_districts ORDER BY user_id'
+        ).fetchall()
+        assert [(row['user_id'], row['district']) for row in assignments] == [
+            ('first', 'ЦАО'), ('second', 'ЦАО'),
+        ]
+    with pytest.raises(sqlite3.IntegrityError):
+        with db.connect(write=True) as conn:
+            conn.execute(
+                'INSERT INTO operator_districts(user_id,district) VALUES(?,?)',
+                ('first', 'САО'),
+            )
+
+
+def test_operators_share_district_and_miniapp_filters_other_districts(tmp_path, monkeypatch):
+    monkeypatch.setenv('MAX_WEBHOOK_SECRET', 'test-secret')
+    monkeypatch.setenv('MAX_BOT_TOKEN', TOKEN)
+    path = str(tmp_path / 'team.db')
+    db = Database(path)
+    db.initialize()
+    with db.connect(write=True) as conn:
+        conn.executemany('INSERT INTO houses(id,address) VALUES(?,?)', [
+            ('one', 'Москва, Дом 1'), ('two', 'Москва, Дом 2'), ('three', 'Москва, Дом 3'),
+        ])
+        conn.executemany('INSERT INTO house_districts(house_id,district) VALUES(?,?)', [
+            ('one', 'ЦАО'), ('two', 'ЦАО'), ('three', 'САО'),
+        ])
+        conn.executemany('INSERT INTO users(id,name,role,house_id,token_hash) VALUES(?,?,?,?,?)', [
+            ('first', 'Первый', 'operator', 'one', token_hash('first-token')),
+            ('second', 'Второй', 'operator', 'two', token_hash('second-token')),
+        ])
+        conn.executemany('INSERT INTO max_links(max_user_id,user_id,linked_at) VALUES(?,?,?)', [
+            (201, 'first', '2026-01-01T00:00:00+00:00'),
+            (202, 'second', '2026-01-01T00:00:00+00:00'),
+        ])
+    db.initialize()
+    with TestClient(create_app(path)) as client:
+        for user_id in (201, 202):
+            headers = {'X-Max-Init-Data': signed_data(user_id)}
+            overview = client.get('/api/miniapp/overview', headers=headers)
+            assert overview.status_code == 200
+            assert overview.json()['operator']['district'] == 'ЦАО'
+            assert {house['id'] for house in overview.json()['houses']} == {'one', 'two'}
+            assert client.get('/api/miniapp/overview?house_id=two', headers=headers).status_code == 200
+            assert client.get('/api/miniapp/overview?house_id=three', headers=headers).status_code == 404
+        with db.connect(write=True) as conn:
+            conn.execute(
+                "UPDATE operator_districts SET district='САО' WHERE user_id='first'"
+            )
+        first_headers = {'X-Max-Init-Data': signed_data(201)}
+        reassigned = client.get('/api/miniapp/overview', headers=first_headers)
+        assert reassigned.status_code == 200
+        assert reassigned.json()['house_id'] == 'three'
+        assert [house['id'] for house in reassigned.json()['houses']] == ['three']
+        assert client.get('/api/miniapp/overview?house_id=one', headers=first_headers).status_code == 404
+        assert {house['id'] for house in client.get(
+            '/api/miniapp/overview', headers={'X-Max-Init-Data': signed_data(202)}
+        ).json()['houses']} == {'one', 'two'}
+
+
+def test_resident_miniapp_follows_verified_houses_and_owns_tickets(tmp_path, monkeypatch):
+    from app.public_miniapp import create_public_app
+
+    path = str(tmp_path / 'resident-miniapp.db')
+    monkeypatch.setenv('DOMPULSE_DB', path)
+    monkeypatch.setenv('MAX_WEBHOOK_SECRET', 'test-webhook-secret')
+    monkeypatch.setenv('MAX_BOT_TOKEN', TOKEN)
+    db = Database(path)
+    db.initialize()
+    with db.connect(write=True) as conn:
+        conn.executemany('INSERT INTO houses(id,address) VALUES(?,?)', [
+            ('one', 'Москва, первый дом'), ('two', 'Москва, второй дом'), ('third', 'Москва, третий дом'),
+        ])
+        conn.executemany('INSERT INTO users(id,name,role,house_id,token_hash) VALUES(?,?,?,?,?)', [
+            ('resident', 'Житель', 'resident', 'one', token_hash('resident-secret')),
+            ('other', 'Другой житель', 'resident', 'two', token_hash('other-secret')),
+            ('operator', 'Оператор', 'operator', 'one', token_hash('operator-secret')),
+        ])
+        conn.execute('INSERT INTO max_links(max_user_id,user_id,linked_at) VALUES(?,?,?)',
+                     (102, 'resident', '2026-01-01T00:00:00+00:00'))
+        conn.executemany('INSERT INTO user_houses(user_id,house_id,verification_method,verified_at,revoked_at) VALUES(?,?,?,?,?)', [
+            ('resident', 'one', 'code', '2026-01-01T00:00:00+00:00', None),
+            ('resident', 'two', 'code', '2026-01-01T00:00:00+00:00', None),
+            ('resident', 'third', 'code', '2026-01-01T00:00:00+00:00', '2026-01-02T00:00:00+00:00'),
+        ])
+        conn.executemany('INSERT INTO tickets(id,house_id,resident_id,category,location,description,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)', [
+            ('mine-one', 'one', 'resident', 'water', 'Подвал', 'Течёт труба в подвале', 'new', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00'),
+            ('mine-two', 'two', 'resident', 'yard', 'Двор', 'Не убран мусор во дворе', 'resolved', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00'),
+            ('foreign', 'two', 'other', 'water', 'Кухня', 'Чужая заявка жителя', 'new', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00'),
+        ])
+        conn.executemany('INSERT INTO announcements(id,house_id,title,body,created_by,created_at) VALUES(?,?,?,?,?,?)', [
+            ('notice-one', 'one', 'О доме 1', 'Работы в первом доме', 'operator', '2026-01-01T00:00:00+00:00'),
+            ('notice-two', 'two', 'О доме 2', 'Работы во втором доме', 'operator', '2026-01-01T00:00:00+00:00'),
+        ])
+    headers = {'X-Max-Init-Data': signed_data(102)}
+    with TestClient(create_public_app()) as client:
+        first = client.get('/api/miniapp/overview', headers=headers)
+        assert first.status_code == 200
+        assert first.json()['role'] == 'resident'
+        assert {house['id'] for house in first.json()['houses']} == {'one', 'two'}
+        assert [ticket['id'] for ticket in first.json()['tickets']] == ['mine-one']
+        assert [item['id'] for item in first.json()['announcements']] == ['notice-one']
+        second = client.get('/api/miniapp/overview?house_id=two', headers=headers)
+        assert [ticket['id'] for ticket in second.json()['tickets']] == ['mine-two']
+        assert [item['id'] for item in second.json()['announcements']] == ['notice-two']
+        assert client.get('/api/miniapp/overview?house_id=third', headers=headers).status_code == 404
+        assert client.get('/api/tickets/foreign', headers=headers).status_code == 404
+        assert client.post('/api/tickets', headers=headers, json={
+            'house_id': 'third', 'category': 'water', 'location': 'Подвал', 'description': 'Вода возле труб в подвале',
+        }).status_code == 404
+        created = client.post('/api/tickets', headers=headers, json={
+            'house_id': 'two', 'category': 'water', 'location': 'Подвал', 'description': 'Вода возле труб в подвале',
+        })
+        assert created.status_code == 201
+        assert created.json()['house_id'] == 'two'
+        assert client.post('/api/tickets/mine-two/status', headers=headers, json={
+            'status': 'confirmed', 'comment': 'Проблема решена', 'expected_version': 1,
+        }).status_code == 200
+        assert client.post('/api/miniapp/tickets/mine-one/priority', headers=headers,
+                           json={'priority': 'urgent', 'expected_version': 1}).status_code == 403
+        assert client.post('/api/tickets', headers={'Authorization': 'Bearer resident-secret'}, json={
+            'house_id': 'one', 'location': 'Подвал', 'description': 'Вода возле труб в подвале',
+        }).status_code == 401
