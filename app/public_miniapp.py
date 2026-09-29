@@ -7,6 +7,7 @@ from pathlib import Path
 import uvicorn
 from fastapi import Request
 from fastapi.responses import PlainTextResponse, Response
+from starlette.middleware.gzip import GZipMiddleware
 
 from .api import create_app
 from .miniapp_document import miniapp_response
@@ -49,6 +50,7 @@ BEARER_POST = (
 
 def create_public_app():
     app = create_app()
+    app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
 
     @app.middleware('http')
     async def only_miniapp(request: Request, call_next):

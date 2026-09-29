@@ -19,7 +19,15 @@
   <title>ДомПульс — мой дом</title>
   <link rel="stylesheet" href="/miniapp/assets/style.css?v=b7081a8ead">
   <link rel="preconnect" href="https://st.max.ru">
-  <script src="https://st.max.ru/js/max-web-app.js" defer></script>
+  <script src="https://st.max.ru/js/max-web-app.js" defer onload="if(window.WebApp?.initData)document.documentElement.classList.add('max-launch-loading')"></script>
+  <script>
+    try {
+      const launchParams = new URLSearchParams(location.hash.slice(1));
+      if (launchParams.has('WebAppData') || launchParams.has('login')) {
+        document.documentElement.classList.add('max-launch-loading');
+      }
+    } catch {}
+  </script>
   <script src="/miniapp/assets/app.js?v=5a9d3c9ab9" defer></script>
 </head>
 <body>
@@ -33,8 +41,12 @@
   <div class="app-shell">
     <main class="main-content login-locked">
       <section id="login-panel" class="login-panel" aria-labelledby="login-title">
+        <div class="launch-loading" role="status" aria-live="polite">
+          <span class="launch-spinner" aria-hidden="true"></span>
+          <span>Загружаем данные…</span>
+        </div>
         <h1 id="login-title">ДомПульс</h1>
-        <p>Откройте приложение из чата с ботом MAX.</p>
+        <p id="login-instruction">Откройте приложение из чата с ботом MAX.</p>
         <p id="login-error" class="login-error" role="alert" hidden></p>
       </section>
       <div id="notice" class="notice" role="status" hidden></div>

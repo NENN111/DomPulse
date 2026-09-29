@@ -10,20 +10,17 @@ async def allowed_house_ids(conn, user):
         if memberships:
             return [row['house_id'] for row in memberships if row['revoked_at'] is None]
         return [user['house_id']]
-    cur = await conn.execute('SELECT h.id FROM houses h JOIN house_districts hd ON hd.house_id=h.id JOIN operator_districts od ON od.district=hd.district WHERE od.user_id=?', (user['id'],))
-    district_houses = sorted({row['id'] for row in await cur.fetchall()})
-    if await operator_districts(conn, user):
-        return district_houses
-    return [user['house_id']]  # Совместимость со старыми базами без округа.
+    cur = await conn.execute(
+        'SELECT DISTINCT h.id FROM operator_districts od '
+        'LEFT JOIN house_districts hd ON hd.district=od.district '
+        'LEFT JOIN houses h ON h.id=hd.house_id '
+        'WHERE od.user_id=? ORDER BY h.id',
+        (user['id'],),
+    )
+    rows = await cur.fetchall()
+    if rows:
+        return [row['id'] for row in rows if row['id'] is not None]
+    return [user['house_id']]
+
+
 async def can_access_house(conn, user, house_id): return house_id in await allowed_house_ids(conn, user)
-async def operator_districts(conn, user):
-    cur = await conn.execute('SELECT district FROM operator_districts WHERE user_id=? ORDER BY district', (user['id'],))
-    return [row['district'] for row in await cur.fetchall()]
-async def district_house_ids(conn, user, district=None):
-    ids = await allowed_house_ids(conn, user)
-    if not district: return ids
-    cur = await conn.execute('SELECT house_id FROM house_districts WHERE district=?', (district,))
-    selected={row['house_id'] for row in await cur.fetchall()}; return [x for x in ids if x in selected]
-async def house_district(conn, house_id):
-    cur = await conn.execute('SELECT district FROM house_districts WHERE house_id=?', (house_id,)); row=await cur.fetchone()
-    return row['district'] if row else 'Округ не указан'

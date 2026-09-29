@@ -25,13 +25,15 @@ const hashParams = new URLSearchParams(location.hash.slice(1));
 const launch = window.WebApp?.initData || hashParams.get('WebAppData') || '';
 const loginCode = hashParams.get('login') || '';
 if(loginCode) history.replaceState(null,'',location.pathname+location.search);
+if(launch || loginCode) document.documentElement.classList.add('max-launch-loading');
 let siteSession = sessionStorage.getItem('dompulse-miniapp-session') || '';
 function showLogin(message='') {
+  document.documentElement.classList.remove('max-launch-loading');
   $('.main-content').classList.add('login-locked');
   $('#login-error').textContent=message;
   $('#login-error').hidden=!message;
 }
-function showApp() { $('.main-content').classList.remove('login-locked'); }
+function showApp() { document.documentElement.classList.remove('max-launch-loading'); $('.main-content').classList.remove('login-locked'); }
 window.WebApp?.ready?.();
 
 let noticeTimer;

@@ -99,8 +99,12 @@ def test_public_entry_exposes_miniapp_and_authenticated_evaluation_api(tmp_path,
     monkeypatch.setenv('MAX_WEBHOOK_SECRET', 'test-webhook-secret')
     monkeypatch.setenv('MAX_BOT_TOKEN', TOKEN)
     with TestClient(create_public_app()) as client:
-        page = client.get('/miniapp')
-        assert page.status_code == 200
+        page = client.get('/miniapp', headers={'Accept-Encoding': 'gzip'})
+        plain = client.get('/miniapp', headers={'Accept-Encoding': 'identity'})
+        assert page.status_code == plain.status_code == 200
+        assert page.text == plain.text
+        assert page.headers['content-encoding'] == 'gzip'
+        assert 'content-encoding' not in plain.headers
         assert '<style>' in page.text
         assert 'document.addEventListener("DOMContentLoaded"' in page.text
         assert '/miniapp/assets/app.js?' not in page.text

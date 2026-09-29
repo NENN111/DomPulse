@@ -147,6 +147,12 @@ input::placeholder, textarea::placeholder { color: #8992a3; }
 .login-locked .login-panel { display: block; }
 .login-panel h1 { margin: 9px 0 12px; font-size: 27px; letter-spacing: -.03em; }
 .login-panel p { color: var(--muted); font-size: 14px; line-height: 1.5; }
+.launch-loading { display: none; align-items: center; gap: 14px; min-height: 64px; color: var(--text); font-size: 15px; font-weight: 600; }
+html.max-launch-loading .launch-loading { display: flex; }
+html.max-launch-loading .login-panel h1,
+html.max-launch-loading #login-instruction { display: none; }
+.launch-spinner { flex: none; width: 24px; height: 24px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: launch-spin .8s linear infinite; }
+@keyframes launch-spin { to { transform: rotate(360deg); } }
 .login-panel form { display: grid; gap: 10px; margin-top: 24px; }
 .login-panel label { font-size: 13px; font-weight: 650; }
 .login-panel input { width: 100%; padding: 12px; font-size: 18px; letter-spacing: .09em; text-transform: uppercase; }
@@ -197,6 +203,7 @@ input::placeholder, textarea::placeholder { color: #8992a3; }
   .detail-line { grid-template-columns: minmax(75px,34%) minmax(0,1fr); }
 }
 @media (prefers-reduced-motion: reduce) {
+  .launch-spinner { animation: none; border-color: var(--accent); border-right-color: var(--line); }
   *, *:before, *:after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
 
