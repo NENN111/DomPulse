@@ -37,12 +37,11 @@ services:
       retries: 3
   caddy:
     image: caddy:2-alpine
-    profiles: ["vps"]
     depends_on:
       - miniapp
     environment:
-      CADDY_DOMAIN: "${CADDY_DOMAIN:-}"
-      ACME_EMAIL: "${ACME_EMAIL:-}"
+      CADDY_DOMAIN: "${CADDY_DOMAIN:?CADDY_DOMAIN is required}"
+      ACME_EMAIL: "${ACME_EMAIL:?ACME_EMAIL is required}"
     ports:
       - "80:80"
       - "443:443"
@@ -65,7 +64,6 @@ services:
     restart: unless-stopped
   max-polling:
     build: .
-    profiles: ["polling"]
     command: ["python", "-m", "app.polling"]
     environment:
       DOMPULSE_DB: "/data/dompulse.db"

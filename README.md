@@ -127,7 +127,7 @@ docker compose run --rm api python -m app.enrollment --db /data/dompulse.db --ho
 Одна команда запускает на VPS все компоненты для демонстрации через polling:
 
 ```powershell
-docker compose --profile polling --profile vps up --build -d
+docker compose up --build -d
 ```
 
 Команда запускает API, Mini App, Caddy и `max-polling`; они используют одну SQLite-базу в томе `dompulse-data`. Caddy принимает запросы на 80 и 443, автоматически получает и продлевает сертификат ACME для `CADDY_DOMAIN`, а затем передаёт запросы Mini App во внутреннюю сеть Docker. Основной API остаётся доступен только на `127.0.0.1:8080` сервера. Сам бот остаётся доступен пользователям **в MAX**, пока работает контейнер `max-polling` и есть соединение с MAX Bot API. Открывайте чат бота в приложении MAX или его веб-версии, а не только локальный Swagger.
@@ -135,22 +135,22 @@ docker compose --profile polling --profile vps up --build -d
 Проверить состояние и посмотреть журнал:
 
 ```powershell
-docker compose --profile polling --profile vps ps
-docker compose --profile polling logs -f max-polling
+docker compose ps
+docker compose logs -f max-polling
 ```
 
 Остановка и повторный запуск:
 
 ```powershell
-docker compose --profile polling --profile vps down
-docker compose --profile polling --profile vps up -d
+docker compose down
+docker compose up -d
 ```
 
 Данные остаются в именованном томе `dompulse-data`. Команда `down -v` удаляет и тестовую базу, поэтому для обычной остановки она не нужна.
 
 ### Внешний сервис, необходимый для проверки
 
-MAX Bot API нельзя воспроизвести внутри Docker: он принимает сообщения пользователей и доставляет ответы бота. Для проверки нужны созданный и доступный в MAX бот, действующий токен этого бота, интернет-доступ контейнера к `https://platform-api2.max.ru` и два аккаунта MAX для одновременной проверки ролей жителя и диспетчера. После запуска проверьте `docker compose --profile polling --profile vps ps`, затем отправьте боту `/start` в MAX. Если MAX недоступен или токен неверен, локальные API и SQLite могут работать, но основной пользовательский сценарий проверить нельзя. ЕСИА и Геокодер Яндекса для этого сценария не требуются: привязка к дому выполняется одноразовым кодом УК.
+MAX Bot API нельзя воспроизвести внутри Docker: он принимает сообщения пользователей и доставляет ответы бота. Для проверки нужны созданный и доступный в MAX бот, действующий токен этого бота, интернет-доступ контейнера к `https://platform-api2.max.ru` и два аккаунта MAX для одновременной проверки ролей жителя и диспетчера. После запуска проверьте `docker compose ps`, затем отправьте боту `/start` в MAX. Если MAX недоступен или токен неверен, локальные API и SQLite могут работать, но основной пользовательский сценарий проверить нельзя. ЕСИА и Геокодер Яндекса для этого сценария не требуются: привязка к дому выполняется одноразовым кодом УК.
 
 ## Mini App жителя и оператора
 
@@ -319,17 +319,17 @@ $env:MAX_WEBHOOK_SECRET='локальный-секрет-длиной-не-ме�
 Создайте у регистратора DNS-запись `A` для поддомена, который указали в `CADDY_DOMAIN`, направив её на IP VPS. Откройте на сервере и в облачном firewall порты 80 и 443. Затем заполните `.env` и запустите:
 
 ```powershell
-docker compose --profile polling --profile vps up --build -d
+docker compose up --build -d
 ```
 
 Caddy сам подтверждает домен через ACME, выпускает сертификат и продлевает его в томе `caddy-data`. Проверка после запуска:
 
 ```powershell
-docker compose --profile polling --profile vps ps
+docker compose ps
 docker compose logs -f caddy
 ```
 
-В настройках MAX укажите `https://<CADDY_DOMAIN>/miniapp`. После изменения домена перезапустите стек: `docker compose --profile polling --profile vps up -d`. Для серверного запуска не нужны ngrok, Cloudflare Tunnel и постоянно включённый домашний компьютер.
+В настройках MAX укажите `https://<CADDY_DOMAIN>/miniapp`. После изменения домена перезапустите стек: `docker compose up -d`. Для серверного запуска не нужны ngrok, Cloudflare Tunnel и постоянно включённый домашний компьютер.
 
 ## Доступ к проверяемой версии
 
@@ -346,7 +346,7 @@ docker compose logs -f caddy
 
 Порядок проверки REST API: выполните GET /health, затем GET /api/me с токенами каждой роли, GET /api/tickets и GET /api/tickets/{id} с токеном жителя, где id взят из его списка. Создайте заявку жителем через POST /api/tickets; сохраните её id и version. Оператором добавьте комментарий, затем примите заявку через POST /api/tickets/{id}/status, передав актуальную version. Проверьте, что житель видит новую запись и ответ, а GET /api/metrics/house доступен оператору. Чужая заявка для жителя возвращает 404, запрос без токена — 401. Подробные тела и поля ответов указаны в [DATA-API.yaml](DATA-API.yaml).
 
-Для Docker на VPS заполните `.env` по [.env.example](.env.example) и выполните **одну команду** `docker compose --profile polling --profile vps up --build -d`. Она запускает API, Mini App, Caddy и обработчик сообщений MAX с общей SQLite-базой. API слушает `127.0.0.1:8080`, Mini App доступен Caddy во внутренней сети Docker, а Caddy принимает HTTPS на 80 и 443. Для повторного запуска: `docker compose --profile polling --profile vps up -d`; для остановки: `docker compose --profile polling --profile vps down`. Том с данными при обычной остановке сохраняется.
+Для Docker на VPS заполните `.env` по [.env.example](.env.example) и выполните **одну команду** `docker compose up --build -d`. Она запускает API, Mini App, Caddy и обработчик сообщений MAX с общей SQLite-базой. API слушает `127.0.0.1:8080`, Mini App доступен Caddy во внутренней сети Docker, а Caddy принимает HTTPS на 80 и 443. Для повторного запуска: `docker compose up -d`; для остановки: `docker compose down`. Том с данными при обычной остановке сохраняется.
 
 Внешние сервисы, которые не воспроизводятся в Docker: MAX Bot API для сообщений и запуска Mini App, DNS домена и действующий токен бота. Для проверки в MAX в настройках партнёрской платформы должен быть указан `https://<CADDY_DOMAIN>/miniapp`. Caddy выпускает HTTPS-сертификат после того, как DNS-запись указывает на VPS и порты 80 и 443 доступны извне. Яндекс Геокодер и bridge ЕСИА для основного сценария не требуются.
 
