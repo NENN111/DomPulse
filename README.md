@@ -106,13 +106,13 @@ MAX_BOT_TOKEN=ваш_токен_бота
 
 ### Постоянные коды для демонстрации в MAX
 
-Для базы с домами всех 12 округов выдайте по одному коду оператора на округ и три кода жителя для домов ЦАО, САО и СВАО:
+Для демонстрации выдайте три кода диспетчера для ЦАО, САО и СВАО, а также два кода жителя для домов ЦАО и САО:
 
 ```powershell
 .\.venv\Scripts\python.exe -m app.permanent_codes --db .local/dompulse.db --output .local/permanent-access-codes.json
 ```
 
-Секреты записываются только в `.local/permanent-access-codes.json`, который исключён из Git. Каждый код вводится в чате бота как `/код XXXX-XXXX-XXXX-XXXX`. Код постоянный и многоразовый: разные аккаунты MAX получат отдельные профили с доступом к указанному дому или округу. Передавайте коды адресно. Для отзыва используйте `python -m app.permanent_codes --db .local/dompulse.db --revoke XXXX-XXXX-XXXX-XXXX`; уже привязанные профили отзыв кода не отключает. Повторная выдача в тот же файл не перезаписывает прежние секреты.
+Секреты записываются только в `.local/permanent-access-codes.json`, который исключён из Git. Каждый код вводится в чате бота как `/код XXXX-XXXX-XXXX-XXXX`. Код постоянный и многоразовый: разные аккаунты MAX получат отдельные профили с доступом к указанному дому или округу. Передавайте коды адресно. При необходимости количество можно изменить параметрами `--operators` и `--residents`. Для отзыва используйте `python -m app.permanent_codes --db .local/dompulse.db --revoke XXXX-XXXX-XXXX-XXXX`; уже привязанные профили отзыв кода не отключает. Повторная выдача в тот же файл не перезаписывает прежние секреты.
 
 Если у бота раньше был настроен webhook, переключите его на локальный polling:
 
@@ -133,6 +133,15 @@ docker compose run --rm api python -m app.seed --db /data/dompulse.db
 docker compose run --rm api python -m app.enrollment --db /data/dompulse.db --house-id synthetic-house-01-1 --role resident
 docker compose run --rm api python -m app.enrollment --db /data/dompulse.db --house-id synthetic-house-01-1 --role operator
 ```
+
+Для постоянного демо-доступа создайте три кода диспетчера и два кода жителя, затем выведите их в терминал:
+
+```powershell
+docker compose run --rm api python -m app.permanent_codes --db /data/dompulse.db --output /data/permanent-access-codes.json
+docker compose run --rm api cat /data/permanent-access-codes.json
+```
+
+Файл с кодами находится в Docker-томе `dompulse-data`: он сохраняется при перезапуске контейнеров. Повторно не запускайте первую команду, пока не отзовёте прежние коды или не удалите файл из тома.
 
 Одна команда запускает на VPS все компоненты для демонстрации через polling:
 

@@ -21,13 +21,14 @@ def test_permanent_codes_cover_districts_and_can_be_reused_then_revoked(tmp_path
 
     output = tmp_path / 'access-codes.json'
     codes = issue_codes(db, output)
-    assert len(codes) == 15
-    assert [item['district'] for item in codes if item['role'] == 'operator'] == list(MOSCOW_DISTRICTS)
-    assert len({item['code'] for item in codes}) == 15
+    assert len(codes) == 5
+    assert [item['district'] for item in codes if item['role'] == 'operator'] == list(MOSCOW_DISTRICTS[:3])
+    assert [item['district'] for item in codes if item['role'] == 'resident'] == list(MOSCOW_DISTRICTS[:2])
+    assert len({item['code'] for item in codes}) == 5
     assert output.exists()
     with db.connect() as conn:
         rows = conn.execute('SELECT code_hash FROM permanent_enrollment_codes').fetchall()
-        assert len(rows) == 15
+        assert len(rows) == 5
         assert {row['code_hash'] for row in rows} == {token_hash(item['code']) for item in codes}
     with pytest.raises(FileExistsError):
         issue_codes(db, output)

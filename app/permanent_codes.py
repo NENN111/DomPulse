@@ -15,7 +15,14 @@ def make_code() -> str:
     return '-'.join(raw[index:index + 4] for index in range(0, 16, 4))
 
 
-def issue_codes(db: Database, output: Path, resident_count: int = 3) -> list[dict]:
+def issue_codes(
+    db: Database,
+    output: Path,
+    operator_count: int = 3,
+    resident_count: int = 2,
+) -> list[dict]:
+    if not 1 <= operator_count <= len(MOSCOW_DISTRICTS):
+        raise ValueError('operator_count must be between 1 and 12')
     if not 1 <= resident_count <= len(MOSCOW_DISTRICTS):
         raise ValueError('resident_count must be between 1 and 12')
     if output.exists():
@@ -31,10 +38,11 @@ def issue_codes(db: Database, output: Path, resident_count: int = 3) -> list[dic
         houses = {}
         for row in rows:
             houses.setdefault(row['district'], dict(row))
-        missing = [district for district in MOSCOW_DISTRICTS if district not in houses]
+        selected_districts = MOSCOW_DISTRICTS[:max(operator_count, resident_count)]
+        missing = [district for district in selected_districts if district not in houses]
         if missing:
             raise ValueError('No houses for districts: ' + ', '.join(missing))
-        chosen = [(district, 'operator') for district in MOSCOW_DISTRICTS]
+        chosen = [(district, 'operator') for district in MOSCOW_DISTRICTS[:operator_count]]
         chosen += [(district, 'resident') for district in MOSCOW_DISTRICTS[:resident_count]]
         result = []
         for district, role in chosen:
@@ -84,7 +92,8 @@ def main():
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument('--output', type=Path)
     action.add_argument('--revoke')
-    parser.add_argument('--residents', type=int, default=3)
+    parser.add_argument('--operators', type=int, default=3)
+    parser.add_argument('--residents', type=int, default=2)
     args = parser.parse_args()
     db = Database(args.db)
     if args.revoke:
@@ -92,7 +101,7 @@ def main():
             raise SystemExit('\u0414\u0435\u0439\u0441\u0442\u0432\u0443\u044e\u0449\u0438\u0439 \u043a\u043e\u0434 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d')
         print('\u041a\u043e\u0434 \u043e\u0442\u043e\u0437\u0432\u0430\u043d')
     else:
-        result = issue_codes(db, args.output, args.residents)
+        result = issue_codes(db, args.output, args.operators, args.residents)
         print(f'\u0412\u044b\u0434\u0430\u043d\u043e {len(result)} \u043a\u043e\u0434\u043e\u0432. \u0424\u0430\u0439\u043b: {args.output}')
 
 
