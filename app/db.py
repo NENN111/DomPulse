@@ -141,6 +141,16 @@ CREATE TABLE IF NOT EXISTS enrollment_codes (
  created_at TEXT NOT NULL,
  revoked_at TEXT
 );
+CREATE TABLE IF NOT EXISTS permanent_enrollment_codes (
+ code_hash TEXT PRIMARY KEY,
+ house_id TEXT NOT NULL REFERENCES houses(id),
+ role TEXT NOT NULL CHECK(role IN ('resident','operator')),
+ used_count INTEGER NOT NULL DEFAULT 0 CHECK(used_count >= 0),
+ created_at TEXT NOT NULL,
+ revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS permanent_enrollment_codes_house
+ ON permanent_enrollment_codes(house_id, role);
 CREATE TABLE IF NOT EXISTS max_link_attempts (
  max_user_id INTEGER PRIMARY KEY,
  failed_count INTEGER NOT NULL DEFAULT 0,

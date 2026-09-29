@@ -222,7 +222,20 @@ async def valid_enrollment(conn, user_id: int, code: str, timestamp: str, expect
         (token_hash(normalized),),
     )
     enrollment = await cursor.fetchone()
-    if enrollment is None or enrollment['expires_at'] <= timestamp or enrollment['used_count'] >= enrollment['max_uses']:
+    if enrollment is not None:
+        enrollment = dict(enrollment)
+        if enrollment['expires_at'] <= timestamp or enrollment['used_count'] >= enrollment['max_uses']:
+            enrollment = None
+    if enrollment is None:
+        cursor = await conn.execute(
+            'SELECT * FROM permanent_enrollment_codes WHERE code_hash=? AND revoked_at IS NULL',
+            (token_hash(normalized),),
+        )
+        permanent = await cursor.fetchone()
+        if permanent is not None:
+            enrollment = dict(permanent)
+            enrollment['permanent'] = True
+    if enrollment is None:
         blocked = await record_failed_link_attempt(conn, user_id, timestamp)
         return None, 'Слишком много попыток. Повторите через 15 минут.' if blocked else 'Код не принят. Проверьте его и повторите попытку.'
 
@@ -236,6 +249,16 @@ async def valid_enrollment(conn, user_id: int, code: str, timestamp: str, expect
                 message = 'Слишком много попыток. Повторите через 15 минут.'
             return None, message
     return enrollment, None
+
+
+async def record_enrollment_use(conn, enrollment):
+    if enrollment.get('permanent'):
+        await conn.execute(
+            'UPDATE permanent_enrollment_codes SET used_count=used_count+1 WHERE code_hash=?',
+            (enrollment['code_hash'],),
+        )
+    else:
+        await conn.execute('UPDATE enrollment_codes SET used_count=used_count+1 WHERE id=?', (enrollment['id'],))
 
 
 async def enroll_with_code(conn, user_id: int, payload: dict[str, Any], code: str, timestamp: str, expected_address: str | None = None):
@@ -265,7 +288,7 @@ async def enroll_with_code(conn, user_id: int, payload: dict[str, Any], code: st
         district = await cursor.fetchone()
         if district:
             await conn.execute('INSERT INTO operator_districts(user_id,district) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET district=excluded.district', (internal_id, district['district']))
-    await conn.execute('UPDATE enrollment_codes SET used_count=used_count+1 WHERE id=?', (enrollment['id'],))
+    await record_enrollment_use(conn, enrollment)
     await conn.execute('DELETE FROM max_link_attempts WHERE max_user_id=?', (user_id,))
     return await linked_user(conn, user_id), None
 
@@ -291,7 +314,7 @@ async def add_house_with_code(conn, user, max_user_id: int, code: str, timestamp
         (user['id'], enrollment['house_id'], 'code', timestamp),
     )
     await conn.execute('UPDATE users SET house_id=? WHERE id=?', (enrollment['house_id'], user['id']))
-    await conn.execute('UPDATE enrollment_codes SET used_count=used_count+1 WHERE id=?', (enrollment['id'],))
+    await record_enrollment_use(conn, enrollment)
     await conn.execute('DELETE FROM max_link_attempts WHERE max_user_id=?', (max_user_id,))
     cursor = await conn.execute('SELECT address FROM houses WHERE id=?', (enrollment['house_id'],))
     return await cursor.fetchone(), None
@@ -363,7 +386,7 @@ async def profile_and_house(conn, user_id: int):
     elif method == 'address_code':
         verification = 'адрес проверен, доступ подтверждён кодом УК'
     elif method == 'code':
-        verification = 'одноразовый код управляющей компании'
+        verification = 'код управляющей компании'
     elif profile['house_id'].startswith('address-'):
         verification = 'ранее проверенный адрес'
     else:
@@ -646,7 +669,7 @@ async def save_dialog(conn, user_id: int, state: str, draft: dict[str, Any], tim
 
 def unlinked_menu() -> tuple[str, list[dict[str, Any]]]:
     return (
-        'Профиль пока не привязан к дому. Выберите способ подтверждения адреса или введите /код <одноразовый-код>.',
+        'Профиль пока не привязан к дому. Выберите способ подтверждения адреса или введите /код <код-УК>.',
         keyboard([['Подтянуть адрес из Госуслуг'], ['Ввести адрес вручную']]),
     )
 
@@ -753,12 +776,12 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
                 )
                 return (
                     f'Адрес найден, округ: {verified.district}. Для подтверждения права на обслуживание '
-                    'введите одноразовый код вашей УК в формате /код XXXX-XXXX-XXXX-XXXX.',
+                    'введите код вашей УК в формате /код XXXX-XXXX-XXXX-XXXX.',
                     keyboard([['Отмена']]),
                 )
             await save_dialog(conn, user_id, 'manual_code', {'address': text}, timestamp)
             return (
-                'Адрес сохранён. Теперь введите одноразовый код вашей УК в формате '
+                'Адрес сохранён. Теперь введите код вашей УК в формате '
                 '/код XXXX-XXXX-XXXX-XXXX. Код подтвердит, что выбран правильный дом.',
                 keyboard([['Отмена']]),
             )
@@ -783,7 +806,7 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
             )
             return (
                 f'Адрес и округ {text} проверены. Для подтверждения права на обслуживание '
-                'введите одноразовый код вашей УК в формате /код XXXX-XXXX-XXXX-XXXX.',
+                'введите код вашей УК в формате /код XXXX-XXXX-XXXX-XXXX.',
                 keyboard([['Отмена']]),
             )
         if text == 'У меня есть код':
@@ -859,7 +882,7 @@ async def process_message(conn, payload: dict[str, Any], user_id: int, timestamp
                     keyboard([['Мои дома'], ['Меню']]),
                 )
             return (
-                'Подключение к Госуслугам пока не настроено. Добавьте дом одноразовым кодом УК.',
+                'Подключение к Госуслугам пока не настроено. Добавьте дом кодом УК.',
                 keyboard([['Ввести код УК'], ['Отмена']]),
             )
         return 'Выберите способ подтверждения дома.', keyboard([

@@ -117,7 +117,7 @@ def test_profile_shows_house_district_and_link_method(max_app):
     assert 'Роль: житель' in reply['text']
     assert 'Дом: Тестовый дом, 1' in reply['text']
     assert 'Округ: ЦАО' in reply['text']
-    assert 'Способ привязки: одноразовый код управляющей компании' in reply['text']
+    assert 'Способ привязки: код управляющей компании' in reply['text']
     buttons = json.loads(reply['attachments_json'])[0]['payload']['buttons']
     assert {'type': 'message', 'text': 'Сообщить о проблеме'} in [button for row in buttons for button in row]
     assert buttons[-1] == [{'type': 'message', 'text': 'Назад'}]
