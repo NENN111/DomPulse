@@ -59,6 +59,8 @@ services:
       MAX_API_BASE: "${MAX_API_BASE:?MAX_API_BASE is required}"
       MAX_BOT_TOKEN: "${MAX_BOT_TOKEN:?MAX_BOT_TOKEN is required}"
       MINIAPP_PUBLIC_URL: "${MINIAPP_PUBLIC_URL:-}"
+      SSL_CERT_FILE: "${SSL_CERT_FILE:-}"
+      SSL_CERT_DIR: "${SSL_CERT_DIR:-}"
     volumes:
       - dompulse-data:/data
     restart: unless-stopped
@@ -72,6 +74,8 @@ services:
       MAX_BOT_USERNAME: "${MAX_BOT_USERNAME:-}"
       GOSUSLUGI_BRIDGE_URL: "${GOSUSLUGI_BRIDGE_URL:-}"
       MINIAPP_PUBLIC_URL: "${MINIAPP_PUBLIC_URL:-}"
+      SSL_CERT_FILE: "${SSL_CERT_FILE:-}"
+      SSL_CERT_DIR: "${SSL_CERT_DIR:-}"
     volumes:
       - dompulse-data:/data
     restart: unless-stopped
